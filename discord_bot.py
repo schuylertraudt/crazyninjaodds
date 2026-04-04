@@ -25,7 +25,6 @@ Commands (in Discord):
 """
 
 import asyncio
-import io
 import logging
 import os
 import shlex
@@ -40,7 +39,6 @@ from scrape_ev import (
     DEFAULT_MIN_BOOKS,
     DEFAULT_MIN_EV,
     DEFAULT_SPORTSBOOKS,
-    CANONICAL_FIELDS,
     scrape_ev,
 )
 
@@ -73,87 +71,165 @@ _schedule_interval = None
 # ---------------------------------------------------------------------------
 
 
-def format_discord_message(bets, max_bets=25):
-    """Format bets into a Discord-friendly message string."""
+BOOK_EMOJI = {
+    "fanduel": "<:fd:1>",
+    "draftkings": "<:dk:2>",
+    "betmgm": "<:mgm:3>",
+    "caesars": "<:czr:4>",
+    "betrivers": "<:br:5>",
+    "fanatics": "<:fan:6>",
+}
+# Fallback if custom emojis aren't set up — uses text badges instead
+BOOK_BADGE = {
+    "fanduel": "FD",
+    "draftkings": "DK",
+    "betmgm": "MGM",
+    "caesars": "CZR",
+    "betrivers": "BR",
+    "fanatics": "FAN",
+}
+
+
+def _ev_sort_key(bet):
+    """Parse EV% string to float for sorting."""
+    raw = bet.get("ev_pct", "0").replace("%", "").replace("+", "").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def _book_badge(name):
+    """Short badge for a sportsbook name."""
+    return BOOK_BADGE.get(name.lower(), name[:3].upper())
+
+
+def _ev_bar(ev_val):
+    """Visual bar for EV% — easier to scan on mobile."""
+    try:
+        ev = float(str(ev_val).replace("%", "").replace("+", "").strip())
+    except (ValueError, TypeError):
+        return ""
+    blocks = min(int(ev), 10)
+    return "\u2588" * blocks + "\u2591" * (10 - blocks)
+
+
+def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
+    """Create clean, mobile-friendly embeds — one embed per batch of bets,
+    sorted by EV% descending."""
     if not bets:
-        return "No +EV bets found matching your filters."
+        embed = discord.Embed(
+            title="No +EV Bets Found",
+            description="No bets matched your filters. Try lowering `--min-ev` or adding more sportsbooks.",
+            color=0xFF4444,
+        )
+        return [embed]
 
-    lines = [f"**+EV Bets Found: {len(bets)}**\n"]
+    sorted_bets = sorted(bets, key=_ev_sort_key, reverse=True)
+    now = datetime.now().strftime("%b %d, %I:%M %p")
 
-    display_bets = bets[:max_bets]
-    for i, bet in enumerate(display_bets, 1):
-        event = bet.get("event", "—")
-        book = bet.get("sportsbook", "—")
-        market = bet.get("market", "")
-        pick = bet.get("bet_name", "—")
-        odds = bet.get("odds", "—")
-        fair = bet.get("fair_odds", "")
-        ev = bet.get("ev_pct", "—")
-        kelly = bet.get("kelly", "")
-        sport = bet.get("sport_league", "")
-
-        line = f"`{i:>2}.` "
-        if sport:
-            line += f"**{sport}** | "
-        line += f"{event}"
-        if market:
-            line += f" — {market}"
-        line += f"\n     {pick} @ **{odds}**"
-        if fair:
-            line += f" (fair: {fair})"
-        line += f" | EV: **{ev}**"
-        if kelly:
-            line += f" | Kelly: {kelly}"
-        line += f" | {book}"
-        lines.append(line)
-
-    if len(bets) > max_bets:
-        lines.append(f"\n*… and {len(bets) - max_bets} more (see CSV)*")
-
-    return "\n".join(lines)
-
-
-def format_embed(bets):
-    """Create a summary embed."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    embed = discord.Embed(
-        title="+EV Scrape Results",
-        description=f"{len(bets)} bets found at {now}",
-        color=0x00CC66 if bets else 0xFF4444,
+    # --- Summary embed ---
+    summary = discord.Embed(
+        title=f"\U0001f4b0 {len(bets)} +EV Bets Found",
+        description=f"Scraped {now}",
+        color=0x00CC66,
     )
 
-    if bets:
-        # Top 5 by EV%
-        sorted_bets = sorted(
-            bets,
-            key=lambda b: float(
-                b.get("ev_pct", "0").replace("%", "").replace("+", "").strip() or "0"
-            ),
-            reverse=True,
+    # Sportsbook breakdown as inline fields
+    books = {}
+    for b in bets:
+        sb = b.get("sportsbook", "Unknown")
+        books[sb] = books.get(sb, 0) + 1
+    for sb_name, count in sorted(books.items(), key=lambda x: -x[1]):
+        summary.add_field(
+            name=f"`{_book_badge(sb_name)}`",
+            value=f"**{count}** bets",
+            inline=True,
         )
-        top = sorted_bets[:5]
-        top_lines = []
-        for b in top:
-            top_lines.append(
-                f"{b.get('event', '?')} — {b.get('bet_name', '?')} @ {b.get('odds', '?')} "
-                f"(**{b.get('ev_pct', '?')}** EV) [{b.get('sportsbook', '?')}]"
-            )
-        embed.add_field(
-            name="Top 5 by EV%",
-            value="\n".join(top_lines) or "—",
+
+    # EV range
+    evs = [_ev_sort_key(b) for b in bets]
+    if evs:
+        summary.add_field(
+            name="EV% Range",
+            value=f"**{min(evs):.1f}%** — **{max(evs):.1f}%**",
             inline=False,
         )
 
-        # Sportsbook breakdown
-        books = {}
-        for b in bets:
-            sb = b.get("sportsbook", "Unknown")
-            books[sb] = books.get(sb, 0) + 1
-        breakdown = ", ".join(f"{k}: {v}" for k, v in sorted(books.items()))
-        embed.add_field(name="By Sportsbook", value=breakdown, inline=False)
+    embeds = [summary]
 
-    embed.set_footer(text="CrazyNinjaOdds +EV Scraper")
-    return embed
+    # --- Bet list embeds ---
+    total_shown = max_per_embed * max_embeds
+    for chunk_start in range(0, min(len(sorted_bets), total_shown), max_per_embed):
+        chunk = sorted_bets[chunk_start : chunk_start + max_per_embed]
+        page_num = chunk_start // max_per_embed + 1
+        total_pages = min(
+            (min(len(sorted_bets), total_shown) + max_per_embed - 1) // max_per_embed,
+            max_embeds,
+        )
+
+        bet_embed = discord.Embed(
+            color=0x2F3136,  # dark theme friendly
+        )
+        if total_pages > 1:
+            bet_embed.set_author(name=f"Page {page_num}/{total_pages}")
+
+        for bet in chunk:
+            sport = bet.get("sport_league", "")
+            event = bet.get("event", "—")
+            market = bet.get("market", "")
+            pick = bet.get("bet_name", "—")
+            odds = bet.get("odds", "—")
+            fair = bet.get("fair_odds", "")
+            ev = bet.get("ev_pct", "—")
+            kelly = bet.get("kelly", "")
+            book = bet.get("sportsbook", "—")
+            time = bet.get("game_time", "")
+
+            # Field name: compact event + sport line
+            name_parts = []
+            if sport:
+                name_parts.append(f"`{sport}`")
+            name_parts.append(event)
+            field_name = " \u2022 ".join(name_parts)
+
+            # Field value: the bet details as a clean card
+            lines = []
+            lines.append(f"\u2022 **{pick}**" + (f" ({market})" if market else ""))
+            lines.append(
+                f"\u2022 Odds: `{odds}`"
+                + (f"  Fair: `{fair}`" if fair else "")
+            )
+
+            ev_display = str(ev).replace("%", "").replace("+", "").strip()
+            ev_line = f"\u2022 EV: **{ev_display}%** `{_ev_bar(ev)}`"
+            if kelly:
+                ev_line += f"  Kelly: **{kelly}**"
+            lines.append(ev_line)
+
+            badge = _book_badge(book)
+            book_line = f"\u2022 `{badge}` {book}"
+            if time:
+                book_line += f"  \u23f0 {time}"
+            lines.append(book_line)
+
+            bet_embed.add_field(
+                name=field_name,
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        embeds.append(bet_embed)
+
+    # Overflow note
+    if len(bets) > total_shown:
+        embeds[-1].set_footer(
+            text=f"Showing top {total_shown} of {len(bets)} bets \u2022 Full list in CSV"
+        )
+    else:
+        embeds[-1].set_footer(text="CrazyNinjaOdds +EV Scraper")
+
+    return embeds
 
 
 async def run_scrape_async(
@@ -274,22 +350,20 @@ async def ev_command(ctx, *, raw_args: str = ""):
         await status_msg.edit(content="No +EV bets found matching your filters.")
         return
 
-    # Post results
-    await status_msg.edit(content=f"Found {len(bets)} +EV bets!")
+    # Post results as embeds
+    await status_msg.edit(content=f"\u2705 Found **{len(bets)}** +EV bets!")
 
-    # Send embed summary
-    embed = format_embed(bets)
-    await ctx.send(embed=embed)
-
-    # Send text listing
-    msg_text = format_discord_message(bets)
-    # Discord has a 2000 char limit per message
-    for chunk in _chunk_message(msg_text, 1900):
-        await ctx.send(chunk)
+    embeds = format_bet_embeds(bets)
+    # Discord allows max 10 embeds per message — send in batches
+    for i in range(0, len(embeds), 10):
+        await ctx.send(embeds=embeds[i : i + 10])
 
     # Attach CSV
     if csv_path and csv_path.exists():
-        await ctx.send(file=discord.File(str(csv_path)))
+        await ctx.send(
+            content="\U0001f4ce Full data attached:",
+            file=discord.File(str(csv_path)),
+        )
 
 
 @bot.command(name="evstop")
@@ -360,37 +434,15 @@ async def _auto_post_loop():
         await channel.send("Scheduled scrape: no +EV bets found.")
         return
 
-    embed = format_embed(bets)
-    await channel.send(embed=embed)
-
-    msg_text = format_discord_message(bets)
-    for chunk in _chunk_message(msg_text, 1900):
-        await channel.send(chunk)
+    embeds = format_bet_embeds(bets)
+    for i in range(0, len(embeds), 10):
+        await channel.send(embeds=embeds[i : i + 10])
 
     if csv_path and csv_path.exists():
-        await channel.send(file=discord.File(str(csv_path)))
-
-
-def _chunk_message(text, max_len=1900):
-    """Split a message into chunks that fit Discord's 2000-char limit."""
-    lines = text.split("\n")
-    chunks = []
-    current = []
-    current_len = 0
-
-    for line in lines:
-        if current_len + len(line) + 1 > max_len:
-            chunks.append("\n".join(current))
-            current = [line]
-            current_len = len(line)
-        else:
-            current.append(line)
-            current_len += len(line) + 1
-
-    if current:
-        chunks.append("\n".join(current))
-
-    return chunks
+        await channel.send(
+            content="\U0001f4ce Full data attached:",
+            file=discord.File(str(csv_path)),
+        )
 
 
 # ---------------------------------------------------------------------------
