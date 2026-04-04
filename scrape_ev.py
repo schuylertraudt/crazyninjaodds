@@ -258,8 +258,8 @@ TABLE_STRATEGIES = [
 
 # Known / expected column names and their canonical mapping
 COLUMN_ALIASES = {
-    "sport": "sport_league",
-    "league": "sport_league",
+    "sport": "sport",
+    "league": "league",
     "sport / league": "sport_league",
     "sport/league": "sport_league",
     "event": "event",
@@ -300,11 +300,20 @@ COLUMN_ALIASES = {
     "+ev%": "ev_pct",
     "ev percentage": "ev_pct",
     "expected value": "ev_pct",
+    "lw-wc ev%": "ev_pct",
+    "lw-wc ev": "ev_pct",
+    "lw ev%": "ev_pct",
+    "wc ev%": "ev_pct",
+    "worst-case ev%": "ev_pct",
+    "worst case ev%": "ev_pct",
     "kelly": "kelly",
     "kelly stake": "kelly",
     "kelly %": "kelly",
     "stake": "kelly",
     "edge": "ev_pct",
+    "books": "books",
+    "calc": "calc",
+    "extra": "extra",
 }
 
 CANONICAL_FIELDS = [
@@ -383,6 +392,15 @@ def map_columns(raw_headers):
     return mapped
 
 
+def _clean_odds(val):
+    """Strip stake/unit info from odds like '+335 ($4)' → '+335'."""
+    if not val:
+        return val
+    # Remove parenthetical like ($4), ($5.50)
+    import re
+    return re.sub(r"\s*\(.*?\)\s*$", "", val).strip()
+
+
 def rows_to_dicts(headers, rows):
     """Convert list-of-lists into list-of-dicts using mapped headers."""
     mapped = map_columns(headers)
@@ -391,6 +409,18 @@ def rows_to_dicts(headers, rows):
         d = {}
         for i, col in enumerate(mapped):
             d[col] = row[i] if i < len(row) else ""
+        # Merge separate sport + league into sport_league
+        if "sport" in d and "league" in d:
+            d["sport_league"] = d["league"] if d["league"] else d["sport"]
+        elif "sport" in d and "sport_league" not in d:
+            d["sport_league"] = d["sport"]
+        elif "league" in d and "sport_league" not in d:
+            d["sport_league"] = d["league"]
+        # Clean odds values (strip stake info)
+        if "odds" in d:
+            d["odds"] = _clean_odds(d["odds"])
+        if "fair_odds" in d:
+            d["fair_odds"] = _clean_odds(d["fair_odds"])
         results.append(d)
     return results
 
