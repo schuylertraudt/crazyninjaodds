@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+ev_bets_*.csv
+api_debug.json
+debug_screenshot.png
+debug_page.html
