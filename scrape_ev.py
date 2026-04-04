@@ -485,15 +485,41 @@ def write_csv(bets, output_dir):
 # ---------------------------------------------------------------------------
 
 
-def main():
-    args = parse_args()
+def scrape_ev(
+    sportsbooks=None,
+    min_ev=DEFAULT_MIN_EV,
+    mainlines_only=DEFAULT_MAINLINES_ONLY,
+    devig_method=DEFAULT_DEVIG,
+    min_books=DEFAULT_MIN_BOOKS,
+    headless=True,
+    intercept_api=False,
+    chromium_path=None,
+    output_dir=Path("."),
+):
+    """Core scraper function. Returns (bets, csv_path) where bets is a list of
+    dicts and csv_path is the Path to the written CSV. Raises RuntimeError if
+    no data is found."""
+
+    if sportsbooks is None:
+        sportsbooks = DEFAULT_SPORTSBOOKS
+
+    # Build a simple namespace so apply_filters works unchanged
+    class _Args:
+        pass
+    args = _Args()
+    args.sportsbooks = sportsbooks
+    args.min_ev = min_ev
+    args.mainlines_only = mainlines_only
+    args.devig_method = devig_method
+    args.min_books = min_books
+    args.intercept_api = intercept_api
 
     with sync_playwright() as pw:
-        launch_kwargs = {"headless": args.headless}
-        if args.chromium_path:
-            launch_kwargs["executable_path"] = args.chromium_path
+        launch_kwargs = {"headless": headless}
+        if chromium_path:
+            launch_kwargs["executable_path"] = chromium_path
 
-        log.info("Launching browser (headless=%s) …", args.headless)
+        log.info("Launching browser (headless=%s) …", headless)
         browser = pw.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -507,7 +533,7 @@ def main():
 
         # Optional API interception
         api_captured = []
-        if args.intercept_api:
+        if intercept_api:
             api_captured = setup_api_intercept(page)
 
         # Navigate
@@ -551,8 +577,7 @@ def main():
                 f.write(page.content())
             log.info("Page HTML saved to debug_page.html")
 
-            # Save API debug if intercepting
-            if args.intercept_api and api_captured:
+            if intercept_api and api_captured:
                 with open("api_debug.json", "w", encoding="utf-8") as f:
                     json.dump(api_captured, f, indent=2)
                 log.info(
@@ -560,7 +585,7 @@ def main():
                 )
 
             browser.close()
-            sys.exit(1)
+            raise RuntimeError("No data rows found — check debug_page.html")
 
         log.info(
             "Table detected via '%s': %d headers, %d rows",
@@ -572,9 +597,8 @@ def main():
         # Map to structured dicts
         bets = rows_to_dicts(headers, raw_rows)
 
-        # Client-side filtering for sportsbook names (in case page filters
-        # didn't work or weren't available)
-        sb_lower = {s.lower() for s in args.sportsbooks}
+        # Client-side sportsbook filter
+        sb_lower = {s.lower() for s in sportsbooks}
         if any("sportsbook" in b for b in bets):
             before = len(bets)
             bets = [
@@ -595,33 +619,25 @@ def main():
             for b in bets:
                 ev_str = b.get("ev_pct", "").replace("%", "").replace("+", "").strip()
                 try:
-                    if float(ev_str) >= args.min_ev:
+                    if float(ev_str) >= min_ev:
                         filtered.append(b)
                 except ValueError:
-                    filtered.append(b)  # keep rows we can't parse
+                    filtered.append(b)
             bets = filtered
             if len(bets) < before:
                 log.info("Filtered min EV%%: %d → %d rows", before, len(bets))
 
-        if not bets:
-            log.warning("No bets remaining after filters!")
-            browser.close()
-            sys.exit(0)
-
-        # Output
-        log.info("Found %d +EV bets", len(bets))
-        print_table(bets)
-        csv_path = write_csv(bets, args.output_dir)
+        # Write CSV
+        csv_path = write_csv(bets, output_dir) if bets else None
 
         # API debug output
-        if args.intercept_api and api_captured:
+        if intercept_api and api_captured:
             with open("api_debug.json", "w", encoding="utf-8") as f:
                 json.dump(api_captured, f, indent=2)
             log.info(
                 "API debug saved to api_debug.json (%d requests captured)",
                 len(api_captured),
             )
-            # Check if any endpoint looks like a clean parameterized API
             for req in api_captured:
                 if req["status"] == 200 and req["body_length"] > 500:
                     log.info(
@@ -632,7 +648,34 @@ def main():
                     )
 
         browser.close()
-        log.info("Done.")
+        log.info("Done — %d bets found.", len(bets))
+        return bets, csv_path
+
+
+def main():
+    args = parse_args()
+
+    try:
+        bets, csv_path = scrape_ev(
+            sportsbooks=args.sportsbooks,
+            min_ev=args.min_ev,
+            mainlines_only=args.mainlines_only,
+            devig_method=args.devig_method,
+            min_books=args.min_books,
+            headless=args.headless,
+            intercept_api=args.intercept_api,
+            chromium_path=args.chromium_path,
+            output_dir=args.output_dir,
+        )
+    except RuntimeError:
+        sys.exit(1)
+
+    if not bets:
+        log.warning("No bets remaining after filters!")
+        sys.exit(0)
+
+    print_table(bets)
+    log.info("Done.")
 
 
 if __name__ == "__main__":

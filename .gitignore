@@ -4,6 +4,7 @@ __pycache__/
 .env
 venv/
 ev_bets_*.csv
+csv_output/
 api_debug.json
 debug_screenshot.png
 debug_page.html
