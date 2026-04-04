@@ -36,8 +36,10 @@ from discord.ext import commands, tasks
 
 from scrape_ev import (
     DEFAULT_DEVIG,
+    DEFAULT_MAX_ODDS,
     DEFAULT_MIN_BOOKS,
     DEFAULT_MIN_EV,
+    DEFAULT_MIN_ODDS,
     DEFAULT_SPORTSBOOKS,
     scrape_ev,
 )
@@ -236,6 +238,8 @@ async def run_scrape_async(
     sportsbooks=None,
     min_ev=DEFAULT_MIN_EV,
     min_books=DEFAULT_MIN_BOOKS,
+    max_odds=DEFAULT_MAX_ODDS,
+    min_odds=DEFAULT_MIN_ODDS,
     devig_method=DEFAULT_DEVIG,
     mainlines_only=True,
 ):
@@ -249,6 +253,8 @@ async def run_scrape_async(
             mainlines_only=mainlines_only,
             devig_method=devig_method,
             min_books=min_books,
+            max_odds=max_odds,
+            min_odds=min_odds,
             headless=True,
             output_dir=OUTPUT_DIR,
         ),
@@ -281,6 +287,8 @@ async def ev_command(ctx, *, raw_args: str = ""):
     sportsbooks = DEFAULT_SPORTSBOOKS
     min_ev = DEFAULT_MIN_EV
     min_books = DEFAULT_MIN_BOOKS
+    max_odds = DEFAULT_MAX_ODDS
+    min_odds = DEFAULT_MIN_ODDS
     devig = DEFAULT_DEVIG
     mainlines = True
 
@@ -289,11 +297,14 @@ async def ev_command(ctx, *, raw_args: str = ""):
             "**!ev options:**\n"
             "`--min-ev <float>` — Minimum EV% (default: 1.0)\n"
             "`--min-books <int>` — Minimum sportsbooks with line (default: 3)\n"
+            "`--max-odds <int>` — Exclude odds above this (default: 250)\n"
+            "`--min-odds <int>` — Exclude odds below this (default: -200)\n"
             "`--sportsbooks <book1> <book2> ...` — Filter to specific books\n"
             "`--no-mainlines-only` — Include props\n"
             "\n**Examples:**\n"
             "`!ev` — defaults\n"
             "`!ev --min-ev 2.5 --sportsbooks FanDuel DraftKings`\n"
+            "`!ev --max-odds 200 --min-odds -150`\n"
         )
         await ctx.send(help_text)
         return
@@ -309,6 +320,12 @@ async def ev_command(ctx, *, raw_args: str = ""):
                     i += 2
                 elif parts[i] == "--min-books" and i + 1 < len(parts):
                     min_books = int(parts[i + 1])
+                    i += 2
+                elif parts[i] == "--max-odds" and i + 1 < len(parts):
+                    max_odds = int(parts[i + 1])
+                    i += 2
+                elif parts[i] == "--min-odds" and i + 1 < len(parts):
+                    min_odds = int(parts[i + 1])
                     i += 2
                 elif parts[i] == "--sportsbooks":
                     i += 1
@@ -327,7 +344,7 @@ async def ev_command(ctx, *, raw_args: str = ""):
             return
 
     status_msg = await ctx.send(
-        f"Scraping +EV bets (min EV: {min_ev}%, books: {', '.join(sportsbooks)}) …"
+        f"Scraping +EV bets (min EV: {min_ev}%, odds: {min_odds} to +{max_odds}) …"
     )
 
     try:
@@ -335,6 +352,8 @@ async def ev_command(ctx, *, raw_args: str = ""):
             sportsbooks=sportsbooks,
             min_ev=min_ev,
             min_books=min_books,
+            max_odds=max_odds,
+            min_odds=min_odds,
             devig_method=devig,
             mainlines_only=mainlines,
         )

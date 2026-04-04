@@ -35,6 +35,8 @@ DEFAULT_MIN_EV = 1.0
 DEFAULT_MAINLINES_ONLY = True
 DEFAULT_DEVIG = "Liquidity-Weighted Worst-case"
 DEFAULT_MIN_BOOKS = 3
+DEFAULT_MAX_ODDS = 250    # filter out odds > +250
+DEFAULT_MIN_ODDS = -200   # filter out odds < -200
 TABLE_TIMEOUT_MS = 30_000
 
 
@@ -68,6 +70,18 @@ def parse_args():
         type=int,
         default=DEFAULT_MIN_BOOKS,
         help="Minimum number of books (default: %(default)s)",
+    )
+    p.add_argument(
+        "--max-odds",
+        type=int,
+        default=DEFAULT_MAX_ODDS,
+        help="Exclude bets with odds above this (e.g. 250 filters out +250 and higher, default: %(default)s)",
+    )
+    p.add_argument(
+        "--min-odds",
+        type=int,
+        default=DEFAULT_MIN_ODDS,
+        help="Exclude bets with odds below this (e.g. -200 filters out -200 and lower, default: %(default)s)",
     )
     p.add_argument(
         "--output-dir",
@@ -491,6 +505,8 @@ def scrape_ev(
     mainlines_only=DEFAULT_MAINLINES_ONLY,
     devig_method=DEFAULT_DEVIG,
     min_books=DEFAULT_MIN_BOOKS,
+    max_odds=DEFAULT_MAX_ODDS,
+    min_odds=DEFAULT_MIN_ODDS,
     headless=True,
     intercept_api=False,
     chromium_path=None,
@@ -627,6 +643,25 @@ def scrape_ev(
             if len(bets) < before:
                 log.info("Filtered min EV%%: %d → %d rows", before, len(bets))
 
+        # Client-side odds range filter
+        if any("odds" in b for b in bets):
+            before = len(bets)
+            filtered = []
+            for b in bets:
+                odds_str = b.get("odds", "").replace("+", "").strip()
+                try:
+                    odds_val = int(odds_str)
+                    if min_odds <= odds_val <= max_odds:
+                        filtered.append(b)
+                except (ValueError, TypeError):
+                    filtered.append(b)  # keep rows we can't parse
+            bets = filtered
+            if len(bets) < before:
+                log.info(
+                    "Filtered odds range (%d to +%d): %d → %d rows",
+                    min_odds, max_odds, before, len(bets),
+                )
+
         # Write CSV
         csv_path = write_csv(bets, output_dir) if bets else None
 
@@ -662,6 +697,8 @@ def main():
             mainlines_only=args.mainlines_only,
             devig_method=args.devig_method,
             min_books=args.min_books,
+            max_odds=args.max_odds,
+            min_odds=args.min_odds,
             headless=args.headless,
             intercept_api=args.intercept_api,
             chromium_path=args.chromium_path,
