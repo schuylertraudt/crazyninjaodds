@@ -405,6 +405,33 @@ def rows_to_dicts(headers, rows):
     """Convert list-of-lists into list-of-dicts using mapped headers."""
     mapped = map_columns(headers)
     log.info("Column mapping: %s", dict(zip(headers, mapped)))
+
+    # Log first few rows for debugging alignment
+    for idx, row in enumerate(rows[:3]):
+        log.info("Raw row %d (%d cells): %s", idx, len(row), row)
+
+    # Detect and handle column count mismatch — if rows consistently have
+    # fewer cells than headers, the extra columns (Calc, Extra, etc.) may
+    # be collapsed in the DOM. Drop unmapped/utility headers to realign.
+    if rows:
+        row_len = len(rows[0])
+        if row_len < len(mapped):
+            # Find which columns are utility/empty and can be dropped
+            droppable = {"calc", "extra"}
+            keep_indices = [i for i, col in enumerate(mapped) if col not in droppable]
+            if len(keep_indices) == row_len:
+                log.info(
+                    "Row has %d cells but %d headers — dropping utility columns: %s",
+                    row_len, len(mapped),
+                    [h for i, h in enumerate(headers) if mapped[i] in droppable],
+                )
+                mapped = [mapped[i] for i in keep_indices]
+            else:
+                log.warning(
+                    "Row has %d cells but %d headers — cannot auto-align!",
+                    row_len, len(mapped),
+                )
+
     results = []
     for row in rows:
         d = {}
