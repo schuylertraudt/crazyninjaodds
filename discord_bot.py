@@ -173,6 +173,7 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
             bet_embed.set_author(name=f"Page {page_num}/{total_pages}")
 
         for bet in chunk:
+            log.info("Embed bet: %s", {k: v for k, v in bet.items() if k not in ('calc', 'extra')})
             sport = bet.get("sport_league", "")
             event = bet.get("event", "\u2014")
             market = bet.get("market", "")
