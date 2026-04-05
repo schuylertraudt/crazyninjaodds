@@ -140,9 +140,9 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
     # Sportsbook breakdown
     books = {}
     for b in bets:
-        sb = b.get("sportsbook", "Unknown")
+        sb = b.get("sportsbook", "").strip() or "Unknown"
         books[sb] = books.get(sb, 0) + 1
-    book_lines = [f"**{name}**: {count}" for name, count in sorted(books.items(), key=lambda x: -x[1])]
+    book_lines = [f"{name}: {count}" for name, count in sorted(books.items(), key=lambda x: -x[1])]
     summary.add_field(name="Sportsbooks", value="\n".join(book_lines), inline=True)
 
     # EV range
@@ -174,15 +174,15 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
 
         for bet in chunk:
             log.info("Embed bet: %s", {k: v for k, v in bet.items() if k not in ('calc', 'extra')})
-            sport = bet.get("sport_league", "")
-            event = bet.get("event", "\u2014")
-            market = bet.get("market", "")
-            pick = bet.get("bet_name", "\u2014")
-            odds = bet.get("odds", "\u2014")
-            fair = bet.get("fair_odds", "")
-            ev = bet.get("ev_pct", "\u2014")
-            book = bet.get("sportsbook", "\u2014")
-            time = bet.get("game_time", "")
+            sport = bet.get("sport_league", "").strip()
+            event = bet.get("event", "").strip() or "\u2014"
+            market = bet.get("market", "").strip()
+            pick = bet.get("bet_name", "").strip() or "\u2014"
+            odds = bet.get("odds", "").strip() or "\u2014"
+            fair = bet.get("fair_odds", "").strip()
+            ev = bet.get("ev_pct", "").strip() or "\u2014"
+            book = bet.get("sportsbook", "").strip() or "\u2014"
+            time = bet.get("game_time", "").strip()
 
             # Field name: event
             title = event

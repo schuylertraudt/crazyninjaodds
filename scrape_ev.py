@@ -436,7 +436,9 @@ def rows_to_dicts(headers, rows):
     for row in rows:
         d = {}
         for i, col in enumerate(mapped):
-            d[col] = row[i] if i < len(row) else ""
+            val = row[i] if i < len(row) else ""
+            # Strip whitespace and invisible characters from all values
+            d[col] = val.strip() if isinstance(val, str) else val
         # Merge separate sport + league into sport_league
         if "sport" in d and "league" in d:
             d["sport_league"] = d["league"] if d["league"] else d["sport"]
