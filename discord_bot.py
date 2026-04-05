@@ -137,25 +137,21 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
         color=0x00CC66,
     )
 
-    # Sportsbook breakdown as inline fields
+    # Sportsbook breakdown
     books = {}
     for b in bets:
         sb = b.get("sportsbook", "Unknown")
         books[sb] = books.get(sb, 0) + 1
-    for sb_name, count in sorted(books.items(), key=lambda x: -x[1]):
-        summary.add_field(
-            name=f"`{_book_badge(sb_name)}`",
-            value=f"**{count}** bets",
-            inline=True,
-        )
+    book_lines = [f"**{name}**: {count}" for name, count in sorted(books.items(), key=lambda x: -x[1])]
+    summary.add_field(name="Sportsbooks", value="\n".join(book_lines), inline=True)
 
     # EV range
     evs = [_ev_sort_key(b) for b in bets]
     if evs:
         summary.add_field(
             name="EV% Range",
-            value=f"**{min(evs):.1f}%** — **{max(evs):.1f}%**",
-            inline=False,
+            value=f"**{min(evs):.1f}%** \u2014 **{max(evs):.1f}%**",
+            inline=True,
         )
 
     embeds = [summary]
@@ -171,52 +167,38 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
         )
 
         bet_embed = discord.Embed(
-            color=0x2F3136,  # dark theme friendly
+            color=0x2F3136,
         )
         if total_pages > 1:
             bet_embed.set_author(name=f"Page {page_num}/{total_pages}")
 
         for bet in chunk:
             sport = bet.get("sport_league", "")
-            event = bet.get("event", "—")
+            event = bet.get("event", "\u2014")
             market = bet.get("market", "")
-            pick = bet.get("bet_name", "—")
-            odds = bet.get("odds", "—")
+            pick = bet.get("bet_name", "\u2014")
+            odds = bet.get("odds", "\u2014")
             fair = bet.get("fair_odds", "")
-            ev = bet.get("ev_pct", "—")
-            kelly = bet.get("kelly", "")
-            book = bet.get("sportsbook", "—")
+            ev = bet.get("ev_pct", "\u2014")
+            book = bet.get("sportsbook", "\u2014")
             time = bet.get("game_time", "")
 
-            # Field name: compact event + sport line
-            name_parts = []
+            # Field name: event
+            title = event
             if sport:
-                name_parts.append(f"`{sport}`")
-            name_parts.append(event)
-            field_name = " \u2022 ".join(name_parts)
+                title = f"{sport} \u2022 {event}"
 
-            # Field value: the bet details as a clean card
-            lines = []
-            lines.append(f"\u2022 **{pick}**" + (f" ({market})" if market else ""))
-            lines.append(
-                f"\u2022 Odds: `{odds}`"
-                + (f"  Fair: `{fair}`" if fair else "")
-            )
-
+            # Field value: simple, no backticks or complex nesting
             ev_display = str(ev).replace("%", "").replace("+", "").strip()
-            ev_line = f"\u2022 EV: **{ev_display}%** `{_ev_bar(ev)}`"
-            if kelly:
-                ev_line += f"  Kelly: **{kelly}**"
-            lines.append(ev_line)
-
-            badge = _book_badge(book)
-            book_line = f"\u2022 `{badge}` {book}"
-            if time:
-                book_line += f"  \u23f0 {time}"
-            lines.append(book_line)
+            lines = [
+                f"\u27A1 **{pick}**" + (f" ({market})" if market else ""),
+                f"\U0001f4b2 Odds: **{odds}**" + (f" | Fair: **{fair}**" if fair else ""),
+                f"\U0001f4c8 EV: **{ev_display}%**",
+                f"\U0001f3e6 {book}" + (f" | {time}" if time else ""),
+            ]
 
             bet_embed.add_field(
-                name=field_name,
+                name=title,
                 value="\n".join(lines),
                 inline=False,
             )
