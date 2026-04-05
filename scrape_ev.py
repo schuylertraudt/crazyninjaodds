@@ -404,6 +404,7 @@ def _clean_odds(val):
 def rows_to_dicts(headers, rows):
     """Convert list-of-lists into list-of-dicts using mapped headers."""
     mapped = map_columns(headers)
+    log.info("Column mapping: %s", dict(zip(headers, mapped)))
     results = []
     for row in rows:
         d = {}
@@ -642,6 +643,8 @@ def scrape_ev(
 
         # Map to structured dicts
         bets = rows_to_dicts(headers, raw_rows)
+        if bets:
+            log.info("Sample bet: %s", bets[0])
 
         # Client-side sportsbook filter
         sb_lower = {s.lower() for s in sportsbooks}
