@@ -339,7 +339,7 @@ def detect_table(page):
         except PwTimeout:
             continue
 
-        # Read headers
+        # Read headers — keep track of which column indices have text
         header_els = page.locator(strat["headers"])
         hcount = header_els.count()
         if hcount == 0:
@@ -347,10 +347,19 @@ def detect_table(page):
             continue
 
         headers = []
+        header_indices = []  # track original column indices
         for i in range(hcount):
             txt = header_els.nth(i).inner_text().strip()
+            headers.append(txt)  # keep ALL headers including empty
             if txt:
-                headers.append(txt)
+                header_indices.append(i)
+
+        non_empty_headers = [h for h in headers if h]
+        if len(non_empty_headers) < 3:
+            log.info("    Only %d non-empty headers, probably not the data table", len(non_empty_headers))
+            continue
+
+        log.info("    Total header elements: %d, non-empty: %d", hcount, len(non_empty_headers))
 
         if len(headers) < 3:
             log.info("    Only %d headers, probably not the data table", len(headers))
@@ -369,14 +378,21 @@ def detect_table(page):
             row = row_els.nth(i)
             cell_els = row.locator(strat["cells"])
             ccount = cell_els.count()
-            cells = []
+            all_cells = []
             for j in range(ccount):
-                cells.append(cell_els.nth(j).inner_text().strip())
+                all_cells.append(cell_els.nth(j).inner_text().strip())
+            # Only keep cells at positions that correspond to non-empty headers
+            # This handles hidden/empty columns that exist in the DOM but aren't real data
+            if ccount == hcount and hcount != len(non_empty_headers):
+                # Row has same cell count as total headers — pick only non-empty header positions
+                cells = [all_cells[idx] for idx in header_indices if idx < ccount]
+            else:
+                cells = all_cells
             if cells and any(c for c in cells):
                 rows_data.append(cells)
 
         if rows_data:
-            return strat["name"], headers, rows_data
+            return strat["name"], non_empty_headers, rows_data
 
     return None, [], []
 
