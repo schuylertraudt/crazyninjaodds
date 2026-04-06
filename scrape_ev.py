@@ -449,6 +449,8 @@ def rows_to_dicts(headers, rows):
                 )
 
     results = []
+    # Required fields that a real data row must have (not empty)
+    required_fields = {"event", "odds", "sportsbook"}
     for row in rows:
         d = {}
         for i, col in enumerate(mapped):
@@ -467,7 +469,13 @@ def rows_to_dicts(headers, rows):
             d["odds"] = _clean_odds(d["odds"])
         if "fair_odds" in d:
             d["fair_odds"] = _clean_odds(d["fair_odds"])
+        # Skip junk rows (sub-headers, footers) that lack required data fields
+        present = {f for f in required_fields if d.get(f)}
+        if not present:
+            continue
         results.append(d)
+    if len(results) < len(rows):
+        log.info("Dropped %d junk/header rows, kept %d data rows", len(rows) - len(results), len(results))
     return results
 
 
@@ -698,8 +706,8 @@ def scrape_ev(
             bets = [
                 b
                 for b in bets
-                if not b.get("sportsbook")
-                or b["sportsbook"].lower() in sb_lower
+                if b.get("sportsbook")
+                and b["sportsbook"].lower() in sb_lower
             ]
             if len(bets) < before:
                 log.info(
