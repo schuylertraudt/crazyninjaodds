@@ -28,7 +28,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -603,13 +605,32 @@ async def _ask_gemini(channel_id, user_name, question):
         history = history[-_MAX_HISTORY:]
         _chat_history[channel_id] = history
 
+    loop = asyncio.get_event_loop()
+
+    async def _send_with_retry(chat, message, max_retries=3):
+        """Send a message to Gemini, retrying on 429 rate-limit errors."""
+        for attempt in range(max_retries + 1):
+            try:
+                return await loop.run_in_executor(
+                    None,
+                    lambda: chat.send_message(message),
+                )
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str and attempt < max_retries:
+                    # Extract retry delay from error if available
+                    match = re.search(r"retry in (\d+(?:\.\d+)?)", err_str, re.IGNORECASE)
+                    wait = float(match.group(1)) + 1 if match else (2 ** attempt) * 5
+                    wait = min(wait, 60)  # cap at 60s
+                    log.info("Gemini rate limited, retrying in %.0fs (attempt %d/%d)",
+                             wait, attempt + 1, max_retries)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+
     try:
         chat = model.start_chat(history=history[:-1])
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: chat.send_message(history[-1]["parts"][0]),
-        )
+        response = await _send_with_retry(chat, history[-1]["parts"][0])
 
         # Check if Gemini wants to call our scrape function
         candidate = response.candidates[0]
@@ -631,10 +652,7 @@ async def _ask_gemini(channel_id, user_name, question):
                             response={"result": result_text},
                         )
                     )
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: chat.send_message(func_response),
-                    )
+                    response = await _send_with_retry(chat, func_response)
                     break
 
         reply = response.text
@@ -646,6 +664,9 @@ async def _ask_gemini(channel_id, user_name, question):
         return reply, bets, csv_path
     except Exception as e:
         log.exception("Gemini API error")
+        err_str = str(e)
+        if "429" in err_str:
+            return ("Rate limited by Gemini free tier. Please wait a minute and try again."), [], None
         return f"Gemini error: {e}", [], None
 
 
