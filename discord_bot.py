@@ -520,7 +520,7 @@ def _get_gemini_model():
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
         return genai.GenerativeModel(
-            "gemini-2.0-flash",
+            "gemini-2.5-flash",
             system_instruction=SYSTEM_PROMPT,
             tools=[{"function_declarations": [_SCRAPE_TOOL_DECLARATION]}],
         )
