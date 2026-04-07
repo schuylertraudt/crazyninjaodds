@@ -56,6 +56,7 @@ log = logging.getLogger("cno-bot")
 # ---------------------------------------------------------------------------
 
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
 OUTPUT_DIR = Path("./csv_output")
 
@@ -445,6 +446,153 @@ async def _auto_post_loop():
             content="\U0001f4ce Full data attached:",
             file=discord.File(str(csv_path)),
         )
+
+
+# ---------------------------------------------------------------------------
+# Gemini AI Chat
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are EV Ninja, a knowledgeable sports betting assistant in a Discord server. "
+    "You specialize in positive expected value (+EV) betting, devigging odds, "
+    "Kelly criterion bankroll management, and sports betting strategy. "
+    "Keep responses concise (under 1500 characters) since this is Discord. "
+    "Use casual but informed tone. You can reference specific sports, markets, "
+    "and sportsbooks. If someone asks about the bot's commands, mention: "
+    "!ev (scrape bets), !evschedule (auto-post), !evstop, and !ask (chat with you). "
+    "Never give financial advice — remind users that all betting carries risk."
+)
+
+# Per-channel conversation history (keeps last few messages for context)
+_chat_history = {}
+_MAX_HISTORY = 20
+
+
+def _get_gemini_model():
+    """Lazily initialize the Gemini model."""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        return genai.GenerativeModel(
+            "gemini-2.0-flash",
+            system_instruction=SYSTEM_PROMPT,
+        )
+    except Exception as e:
+        log.error("Failed to initialize Gemini: %s", e)
+        return None
+
+
+async def _ask_gemini(channel_id, user_name, question):
+    """Send a message to Gemini with conversation history."""
+    model = _get_gemini_model()
+    if not model:
+        return "Gemini AI is not configured. Set `GEMINI_API_KEY` env var."
+
+    # Build conversation history
+    if channel_id not in _chat_history:
+        _chat_history[channel_id] = []
+
+    history = _chat_history[channel_id]
+    history.append({"role": "user", "parts": [f"{user_name}: {question}"]})
+
+    # Trim to max history
+    if len(history) > _MAX_HISTORY:
+        history = history[-_MAX_HISTORY:]
+        _chat_history[channel_id] = history
+
+    try:
+        chat = model.start_chat(history=history[:-1])
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: chat.send_message(history[-1]["parts"][0]),
+        )
+        reply = response.text
+
+        # Save assistant response to history
+        history.append({"role": "model", "parts": [reply]})
+        _chat_history[channel_id] = history
+
+        return reply
+    except Exception as e:
+        log.exception("Gemini API error")
+        return f"Gemini error: {e}"
+
+
+@bot.command(name="ask")
+async def ask_command(ctx, *, question: str = ""):
+    """Ask the AI a question about sports betting or EV strategy."""
+    if not GEMINI_API_KEY:
+        await ctx.send(
+            "AI chat is not configured. The bot owner needs to set "
+            "`GEMINI_API_KEY` environment variable."
+        )
+        return
+
+    if not question.strip():
+        await ctx.send("Usage: `!ask <your question>`\nExample: `!ask what is Kelly criterion?`")
+        return
+
+    async with ctx.typing():
+        reply = await _ask_gemini(
+            str(ctx.channel.id),
+            ctx.author.display_name,
+            question,
+        )
+
+    # Chunk reply to fit Discord's 2000-char limit
+    while reply:
+        await ctx.send(reply[:1900])
+        reply = reply[1900:]
+
+
+@bot.command(name="clearchat")
+async def clearchat_command(ctx):
+    """Clear the AI conversation history for this channel."""
+    channel_id = str(ctx.channel.id)
+    if channel_id in _chat_history:
+        del _chat_history[channel_id]
+    await ctx.send("Chat history cleared.")
+
+
+@bot.event
+async def on_message(message):
+    """Respond to @mentions with Gemini AI."""
+    # Don't respond to ourselves
+    if message.author == bot.user:
+        return
+
+    # Process commands first
+    await bot.process_commands(message)
+
+    # Respond to @mentions (but not command messages)
+    if bot.user in message.mentions and not message.content.startswith("!"):
+        if not GEMINI_API_KEY:
+            await message.channel.send(
+                "AI chat is not configured. Use `!ask` once `GEMINI_API_KEY` is set."
+            )
+            return
+
+        # Strip the mention from the message
+        question = message.content
+        for mention in message.mentions:
+            question = question.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
+        question = question.strip()
+
+        if not question:
+            await message.channel.send("Hey! Ask me anything about sports betting or EV strategy.")
+            return
+
+        async with message.channel.typing():
+            reply = await _ask_gemini(
+                str(message.channel.id),
+                message.author.display_name,
+                question,
+            )
+
+        while reply:
+            await message.channel.send(reply[:1900])
+            reply = reply[1900:]
 
 
 # ---------------------------------------------------------------------------
