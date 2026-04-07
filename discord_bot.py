@@ -25,6 +25,7 @@ Commands (in Discord):
 """
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -449,7 +450,7 @@ async def _auto_post_loop():
 
 
 # ---------------------------------------------------------------------------
-# Gemini AI Chat
+# Gemini AI Chat with Function Calling
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
@@ -460,8 +461,51 @@ SYSTEM_PROMPT = (
     "Use casual but informed tone. You can reference specific sports, markets, "
     "and sportsbooks. If someone asks about the bot's commands, mention: "
     "!ev (scrape bets), !evschedule (auto-post), !evstop, and !ask (chat with you). "
-    "Never give financial advice — remind users that all betting carries risk."
+    "Never give financial advice — remind users that all betting carries risk.\n\n"
+    "IMPORTANT: When a user asks to see, find, show, get, or check EV bets, +EV bets, "
+    "or betting opportunities — USE the scrape_ev_bets tool to fetch live data. "
+    "This includes requests like 'what EV bets are on FanDuel?', 'show me BetRivers bets', "
+    "'any good bets right now?', 'what's out there on DraftKings?', etc. "
+    "Extract sportsbook names and any filters from the user's message. "
+    "Available sportsbooks: FanDuel, DraftKings, BetMGM, Caesars, BetRivers, Fanatics."
 )
+
+# Gemini function declaration for the scraper tool
+_SCRAPE_TOOL_DECLARATION = {
+    "name": "scrape_ev_bets",
+    "description": (
+        "Scrape live +EV (positive expected value) sports bets from CrazyNinjaOdds. "
+        "Call this whenever the user wants to see current EV bets, betting opportunities, "
+        "or asks about what bets are available on specific sportsbooks."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "sportsbooks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Sportsbooks to filter for. Valid values: FanDuel, DraftKings, "
+                    "BetMGM, Caesars, BetRivers, Fanatics. "
+                    "Omit or pass empty array for all default sportsbooks."
+                ),
+            },
+            "min_ev": {
+                "type": "number",
+                "description": "Minimum EV percentage to include (default 1.0).",
+            },
+            "max_odds": {
+                "type": "integer",
+                "description": "Exclude odds above this value, e.g. 250 means +250 (default 250).",
+            },
+            "min_odds": {
+                "type": "integer",
+                "description": "Exclude odds below this value, e.g. -200 (default -200).",
+            },
+        },
+        "required": [],
+    },
+}
 
 # Per-channel conversation history (keeps last few messages for context)
 _chat_history = {}
@@ -469,24 +513,83 @@ _MAX_HISTORY = 20
 
 
 def _get_gemini_model():
-    """Lazily initialize the Gemini model."""
+    """Lazily initialize the Gemini model with function calling tools."""
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
         return genai.GenerativeModel(
             "gemini-2.0-flash",
             system_instruction=SYSTEM_PROMPT,
+            tools=[{"function_declarations": [_SCRAPE_TOOL_DECLARATION]}],
         )
     except Exception as e:
         log.error("Failed to initialize Gemini: %s", e)
         return None
 
 
+def _format_bets_for_ai(bets):
+    """Format scraped bets as a concise text summary for Gemini to present."""
+    if not bets:
+        return "No +EV bets found matching the filters."
+
+    sorted_bets = sorted(bets, key=_ev_sort_key, reverse=True)
+    lines = [f"Found {len(bets)} +EV bets:\n"]
+
+    for i, bet in enumerate(sorted_bets[:25]):
+        ev = bet.get("ev_pct", "?").replace("%", "").strip()
+        odds = bet.get("odds", "?")
+        fair = bet.get("fair_odds", "")
+        book = bet.get("sportsbook", "?")
+        event = bet.get("event", "?")
+        pick = bet.get("bet_name", "?")
+        market = bet.get("market", "")
+        sport = bet.get("sport_league", "")
+
+        line = f"{i+1}. [{book}] {event} — {pick}"
+        if market:
+            line += f" ({market})"
+        line += f" | Odds: {odds}"
+        if fair:
+            line += f" / Fair: {fair}"
+        line += f" | EV: {ev}%"
+        if sport:
+            line += f" | {sport}"
+        lines.append(line)
+
+    if len(bets) > 25:
+        lines.append(f"\n...and {len(bets) - 25} more. Full list available via CSV.")
+
+    return "\n".join(lines)
+
+
+async def _handle_scrape_function_call(func_call):
+    """Execute the scrape based on Gemini's function call and return results."""
+    args = dict(func_call.args) if func_call.args else {}
+    log.info("AI triggered scrape with args: %s", args)
+
+    sportsbooks = args.get("sportsbooks", []) or None
+    min_ev = args.get("min_ev", DEFAULT_MIN_EV)
+    max_odds = args.get("max_odds", DEFAULT_MAX_ODDS)
+    min_odds = args.get("min_odds", DEFAULT_MIN_ODDS)
+
+    try:
+        bets, csv_path = await run_scrape_async(
+            sportsbooks=sportsbooks,
+            min_ev=min_ev,
+            max_odds=max_odds,
+            min_odds=min_odds,
+        )
+        return bets, csv_path, _format_bets_for_ai(bets)
+    except Exception as e:
+        log.exception("AI-triggered scrape failed")
+        return [], None, f"Scrape failed: {e}"
+
+
 async def _ask_gemini(channel_id, user_name, question):
-    """Send a message to Gemini with conversation history."""
+    """Send a message to Gemini with conversation history and function calling."""
     model = _get_gemini_model()
     if not model:
-        return "Gemini AI is not configured. Set `GEMINI_API_KEY` env var."
+        return "Gemini AI is not configured. Set `GEMINI_API_KEY` env var.", [], None
 
     # Build conversation history
     if channel_id not in _chat_history:
@@ -507,16 +610,66 @@ async def _ask_gemini(channel_id, user_name, question):
             None,
             lambda: chat.send_message(history[-1]["parts"][0]),
         )
+
+        # Check if Gemini wants to call our scrape function
+        candidate = response.candidates[0]
+        bets = []
+        csv_path = None
+
+        if candidate.content.parts:
+            for part in candidate.content.parts:
+                if hasattr(part, "function_call") and part.function_call.name == "scrape_ev_bets":
+                    bets, csv_path, result_text = await _handle_scrape_function_call(
+                        part.function_call
+                    )
+
+                    # Send the function result back to Gemini so it can summarize
+                    import google.generativeai as genai
+                    func_response = genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name="scrape_ev_bets",
+                            response={"result": result_text},
+                        )
+                    )
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: chat.send_message(func_response),
+                    )
+                    break
+
         reply = response.text
 
         # Save assistant response to history
         history.append({"role": "model", "parts": [reply]})
         _chat_history[channel_id] = history
 
-        return reply
+        return reply, bets, csv_path
     except Exception as e:
         log.exception("Gemini API error")
-        return f"Gemini error: {e}"
+        return f"Gemini error: {e}", [], None
+
+
+async def _handle_ai_response(channel, channel_id, user_name, question):
+    """Common handler for AI responses — sends reply, embeds, and CSV."""
+    async with channel.typing():
+        reply, bets, csv_path = await _ask_gemini(channel_id, user_name, question)
+
+    # Send the AI's text reply
+    while reply:
+        await channel.send(reply[:1900])
+        reply = reply[1900:]
+
+    # If the AI triggered a scrape, also send embeds and CSV
+    if bets:
+        embeds = format_bet_embeds(bets)
+        for i in range(0, len(embeds), 10):
+            await channel.send(embeds=embeds[i : i + 10])
+
+        if csv_path and csv_path.exists():
+            await channel.send(
+                content="\U0001f4ce Full data attached:",
+                file=discord.File(str(csv_path)),
+            )
 
 
 @bot.command(name="ask")
@@ -533,17 +686,12 @@ async def ask_command(ctx, *, question: str = ""):
         await ctx.send("Usage: `!ask <your question>`\nExample: `!ask what is Kelly criterion?`")
         return
 
-    async with ctx.typing():
-        reply = await _ask_gemini(
-            str(ctx.channel.id),
-            ctx.author.display_name,
-            question,
-        )
-
-    # Chunk reply to fit Discord's 2000-char limit
-    while reply:
-        await ctx.send(reply[:1900])
-        reply = reply[1900:]
+    await _handle_ai_response(
+        ctx.channel,
+        str(ctx.channel.id),
+        ctx.author.display_name,
+        question,
+    )
 
 
 @bot.command(name="clearchat")
@@ -583,16 +731,12 @@ async def on_message(message):
             await message.channel.send("Hey! Ask me anything about sports betting or EV strategy.")
             return
 
-        async with message.channel.typing():
-            reply = await _ask_gemini(
-                str(message.channel.id),
-                message.author.display_name,
-                question,
-            )
-
-        while reply:
-            await message.channel.send(reply[:1900])
-            reply = reply[1900:]
+        await _handle_ai_response(
+            message.channel,
+            str(message.channel.id),
+            message.author.display_name,
+            question,
+        )
 
 
 # ---------------------------------------------------------------------------
