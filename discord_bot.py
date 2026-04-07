@@ -46,6 +46,7 @@ from scrape_ev import (
     DEFAULT_SPORTSBOOKS,
     scrape_ev,
 )
+from scrape_oa import scrape_oa
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,6 +62,8 @@ log = logging.getLogger("cno-bot")
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
+OA_EMAIL = os.environ.get("OA_EMAIL", "")
+OA_PASSWORD = os.environ.get("OA_PASSWORD", "")
 OUTPUT_DIR = Path("./csv_output")
 
 intents = discord.Intents.default()
@@ -93,6 +96,7 @@ BOOK_BADGE = {
     "caesars": "CZR",
     "betrivers": "BR",
     "fanatics": "FAN",
+    "hard rock": "HR",
 }
 
 
@@ -195,11 +199,13 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
 
             # Field value: simple, no backticks or complex nesting
             ev_display = str(ev).replace("%", "").replace("+", "").strip()
+            source = bet.get("source", "").strip()
+            source_tag = f" [{source}]" if source else ""
             lines = [
                 f"\u27A1 **{pick}**" + (f" ({market})" if market else ""),
                 f"\U0001f4b2 Odds: **{odds}**" + (f" | Fair: **{fair}**" if fair else ""),
                 f"\U0001f4c8 EV: **{ev_display}%**",
-                f"\U0001f3e6 {book}" + (f" | {time}" if time else ""),
+                f"\U0001f3e6 {book}" + (f" | {time}" if time else "") + source_tag,
             ]
 
             bet_embed.add_field(
@@ -230,22 +236,73 @@ async def run_scrape_async(
     devig_method=DEFAULT_DEVIG,
     mainlines_only=True,
 ):
-    """Run the scraper in a thread pool so it doesn't block the bot."""
+    """Run both scrapers (CNO + OddsAssist) in parallel and merge results."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: scrape_ev(
-            sportsbooks=sportsbooks or DEFAULT_SPORTSBOOKS,
-            min_ev=min_ev,
-            mainlines_only=mainlines_only,
-            devig_method=devig_method,
-            min_books=min_books,
-            max_odds=max_odds,
-            min_odds=min_odds,
-            headless=True,
-            output_dir=OUTPUT_DIR,
-        ),
-    )
+    books = sportsbooks or DEFAULT_SPORTSBOOKS
+
+    # Run CNO scraper
+    async def _run_cno():
+        try:
+            bets, csv_path = await loop.run_in_executor(
+                None,
+                lambda: scrape_ev(
+                    sportsbooks=books,
+                    min_ev=min_ev,
+                    mainlines_only=mainlines_only,
+                    devig_method=devig_method,
+                    min_books=min_books,
+                    max_odds=max_odds,
+                    min_odds=min_odds,
+                    headless=True,
+                    output_dir=OUTPUT_DIR,
+                ),
+            )
+            # Tag source
+            for b in bets:
+                b.setdefault("source", "CNO")
+            return bets, csv_path
+        except Exception as e:
+            log.warning("CNO scraper failed: %s", e)
+            return [], None
+
+    # Run OddsAssist scraper (only if credentials are set)
+    async def _run_oa():
+        if not OA_EMAIL or not OA_PASSWORD:
+            log.info("OddsAssist Pro credentials not set, skipping OA scraper")
+            return [], None
+        try:
+            bets, csv_path = await loop.run_in_executor(
+                None,
+                lambda: scrape_oa(
+                    sportsbooks=books,
+                    min_ev=min_ev,
+                    max_odds=max_odds,
+                    min_odds=min_odds,
+                    headless=True,
+                    output_dir=OUTPUT_DIR,
+                    email=OA_EMAIL,
+                    password=OA_PASSWORD,
+                ),
+            )
+            return bets, csv_path
+        except Exception as e:
+            log.warning("OddsAssist scraper failed: %s", e)
+            return [], None
+
+    # Run both in parallel
+    cno_result, oa_result = await asyncio.gather(_run_cno(), _run_oa())
+    cno_bets, cno_csv = cno_result
+    oa_bets, oa_csv = oa_result
+
+    # Merge results
+    all_bets = cno_bets + oa_bets
+    log.info("Combined results: %d CNO + %d OA = %d total",
+             len(cno_bets), len(oa_bets), len(all_bets))
+
+    # Use whichever CSV exists (prefer the one with more data)
+    csv_path = cno_csv or oa_csv
+
+    return all_bets, csv_path
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +533,7 @@ SYSTEM_PROMPT = (
 _SCRAPE_TOOL_DECLARATION = {
     "name": "scrape_ev_bets",
     "description": (
-        "Scrape live +EV (positive expected value) sports bets from CrazyNinjaOdds. "
+        "Scrape live +EV (positive expected value) sports bets from CrazyNinjaOdds and OddsAssist Pro. "
         "Call this whenever the user wants to see current EV bets, betting opportunities, "
         "or asks about what bets are available on specific sportsbooks."
     ),
@@ -488,7 +545,7 @@ _SCRAPE_TOOL_DECLARATION = {
                 "items": {"type": "string"},
                 "description": (
                     "Sportsbooks to filter for. Valid values: FanDuel, DraftKings, "
-                    "BetMGM, Caesars, BetRivers, Fanatics. "
+                    "BetMGM, Caesars, BetRivers, Fanatics, Hard Rock. "
                     "Omit or pass empty array for all default sportsbooks."
                 ),
             },
@@ -689,6 +746,7 @@ _BOOK_ALIASES = {
     "caesars": "Caesars", "czr": "Caesars",
     "betrivers": "BetRivers", "br": "BetRivers", "bet rivers": "BetRivers",
     "fanatics": "Fanatics", "fan": "Fanatics",
+    "hard rock": "Hard Rock", "hardrock": "Hard Rock", "hr": "Hard Rock",
 }
 
 

@@ -8,3 +8,6 @@ csv_output/
 api_debug.json
 debug_screenshot.png
 debug_page.html
+debug_oa_screenshot.png
+debug_oa_page.html
+oa_ev_bets_*.csv
