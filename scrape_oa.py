@@ -39,6 +39,10 @@ DEFAULT_SPORTSBOOKS = [
 DEFAULT_MIN_EV = 1.0
 DEFAULT_MAX_ODDS = 250
 DEFAULT_MIN_ODDS = -200
+# Persistent browser profile directory — stores cookies/session after manual login
+BROWSER_PROFILE_DIR = os.environ.get(
+    "OA_BROWSER_PROFILE", os.path.join(os.path.expanduser("~"), ".oa_browser_profile")
+)
 
 CANONICAL_FIELDS = [
     "source",
@@ -119,114 +123,49 @@ def _identify_sportsbook(card):
     return "Unknown"
 
 
-def _login(page, email, password):
-    """Log in to OddsAssist Pro."""
-    log.info("Logging in to OddsAssist Pro...")
+def oa_login(chromium_path=None):
+    """Open a visible browser so the user can log in to OddsAssist Pro via Google OAuth.
+    The session is saved to BROWSER_PROFILE_DIR for reuse by headless scrapes.
 
-    # Look for login/sign-in button or link on the page
-    try:
-        # Try common login selectors
-        login_triggers = [
-            "a:has-text('Log In')",
-            "a:has-text('Login')",
-            "a:has-text('Sign In')",
-            "a:has-text('Sign in')",
-            "button:has-text('Log In')",
-            "button:has-text('Login')",
-            "button:has-text('Sign In')",
-            "[data-testid='login']",
-            "a[href*='login']",
-            "a[href*='signin']",
-            "a[href*='sign-in']",
-        ]
+    Run this once:  python scrape_oa.py --login
+    """
+    log.info("Opening browser for manual login...")
+    log.info("Browser profile will be saved to: %s", BROWSER_PROFILE_DIR)
 
-        clicked = False
-        for sel in login_triggers:
-            loc = page.locator(sel)
-            if loc.count() > 0:
-                loc.first.click()
-                clicked = True
-                log.info("  Clicked login trigger: %s", sel)
-                page.wait_for_timeout(2000)
-                break
+    with sync_playwright() as pw:
+        launch_kwargs = {"headless": False}
+        if chromium_path:
+            launch_kwargs["executable_path"] = chromium_path
 
-        if not clicked:
-            # Maybe we're already on a login page
-            log.info("  No login button found, checking for login form...")
+        context = pw.chromium.launch_persistent_context(
+            BROWSER_PROFILE_DIR,
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            **launch_kwargs,
+        )
+        page = context.new_page()
+        page.goto(URL, wait_until="networkidle", timeout=45_000)
 
-        # Wait for and fill login form
-        # Try email/username field
-        email_selectors = [
-            "input[type='email']",
-            "input[name='email']",
-            "input[name='username']",
-            "input[id*='email' i]",
-            "input[id*='user' i]",
-            "input[placeholder*='email' i]",
-            "input[placeholder*='user' i]",
-        ]
+        log.info("")
+        log.info("=" * 60)
+        log.info("  A browser window has opened.")
+        log.info("  Please log in to OddsAssist Pro via Google OAuth.")
+        log.info("  Once you see the +EV bets page, close the browser.")
+        log.info("=" * 60)
+        log.info("")
 
-        email_filled = False
-        for sel in email_selectors:
-            loc = page.locator(sel)
-            if loc.count() > 0:
-                loc.first.fill(email)
-                email_filled = True
-                log.info("  Filled email field: %s", sel)
-                break
+        # Wait for the user to close the browser
+        try:
+            page.wait_for_event("close", timeout=300_000)  # 5 min
+        except Exception:
+            pass
 
-        if not email_filled:
-            log.warning("  Could not find email input")
-            return False
-
-        # Try password field
-        pw_selectors = [
-            "input[type='password']",
-            "input[name='password']",
-            "input[id*='password' i]",
-            "input[placeholder*='password' i]",
-        ]
-
-        pw_filled = False
-        for sel in pw_selectors:
-            loc = page.locator(sel)
-            if loc.count() > 0:
-                loc.first.fill(password)
-                pw_filled = True
-                log.info("  Filled password field")
-                break
-
-        if not pw_filled:
-            log.warning("  Could not find password input")
-            return False
-
-        # Submit the form
-        submit_selectors = [
-            "button[type='submit']",
-            "button:has-text('Log In')",
-            "button:has-text('Login')",
-            "button:has-text('Sign In')",
-            "button:has-text('Sign in')",
-            "button:has-text('Continue')",
-            "input[type='submit']",
-        ]
-
-        for sel in submit_selectors:
-            loc = page.locator(sel)
-            if loc.count() > 0:
-                loc.first.click()
-                log.info("  Clicked submit button: %s", sel)
-                break
-
-        # Wait for navigation after login
-        page.wait_for_timeout(3000)
-        page.wait_for_load_state("networkidle", timeout=15000)
-        log.info("  Login completed, current URL: %s", page.url)
-        return True
-
-    except Exception as e:
-        log.error("  Login failed: %s", e)
-        return False
+        context.close()
+        log.info("Login session saved! You can now run headless scrapes.")
 
 
 def _parse_bet_cards(page):
@@ -495,21 +434,18 @@ def scrape_oa(
     headless=True,
     chromium_path=None,
     output_dir=Path("."),
-    email=None,
-    password=None,
 ):
     """Core scraper function for OddsAssist Pro.
+    Uses persistent browser profile for auth (run --login first).
     Returns (bets, csv_path). Raises RuntimeError on failure."""
 
     if sportsbooks is None:
         sportsbooks = DEFAULT_SPORTSBOOKS
 
-    email = email or os.environ.get("OA_EMAIL", "")
-    password = password or os.environ.get("OA_PASSWORD", "")
-
-    if not email or not password:
+    if not os.path.isdir(BROWSER_PROFILE_DIR):
         raise RuntimeError(
-            "OddsAssist Pro requires login. Set OA_EMAIL and OA_PASSWORD environment variables."
+            "No saved browser session found. Run `python scrape_oa.py --login` first "
+            "to log in via Google OAuth and save your session."
         )
 
     with sync_playwright() as pw:
@@ -517,50 +453,35 @@ def scrape_oa(
         if chromium_path:
             launch_kwargs["executable_path"] = chromium_path
 
-        log.info("Launching browser (headless=%s) …", headless)
-        browser = pw.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
+        log.info("Launching browser with saved session (headless=%s) …", headless)
+        context = pw.chromium.launch_persistent_context(
+            BROWSER_PROFILE_DIR,
             viewport={"width": 1920, "height": 1080},
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/131.0.0.0 Safari/537.36"
             ),
+            **launch_kwargs,
         )
         page = context.new_page()
 
-        # Navigate to the site
+        # Navigate to the +EV page
         log.info("Navigating to %s …", URL)
         try:
             page.goto(URL, wait_until="networkidle", timeout=45_000)
         except PwTimeout:
             log.warning("networkidle timeout — continuing anyway")
 
-        log.info("Page loaded: %s", page.title() or "(no title)")
+        log.info("Page loaded: %s (URL: %s)", page.title() or "(no title)", page.url)
 
-        # Check if we need to log in (redirected to login page or see login prompt)
+        # Check if session expired (redirected to login)
         current_url = page.url.lower()
-        page_text = page.locator("body").inner_text().lower()
-        needs_login = (
-            "login" in current_url
-            or "signin" in current_url
-            or "sign-in" in current_url
-            or "log in" in page_text[:500]
-            or "sign in" in page_text[:500]
-        )
-
-        if needs_login:
-            success = _login(page, email, password)
-            if not success:
-                browser.close()
-                raise RuntimeError("Failed to log in to OddsAssist Pro")
-
-            # Navigate to +EV page after login
-            log.info("Navigating to +EV page after login...")
-            try:
-                page.goto(URL, wait_until="networkidle", timeout=45_000)
-            except PwTimeout:
-                log.warning("networkidle timeout — continuing anyway")
+        if "login" in current_url or "signin" in current_url or "sign-in" in current_url:
+            context.close()
+            raise RuntimeError(
+                "Session expired — run `python scrape_oa.py --login` again to re-authenticate."
+            )
 
         # Wait for content to load
         log.info("Waiting for +EV bets to load...")
@@ -595,7 +516,7 @@ def scrape_oa(
                 f.write(page.content())
             log.info("Page HTML saved to debug_oa_page.html")
 
-            browser.close()
+            context.close()
             raise RuntimeError("No bets found on OddsAssist Pro — check debug_oa_page.html")
 
         if bets:
@@ -643,13 +564,15 @@ def scrape_oa(
         # Write CSV
         csv_path = write_csv(bets, output_dir) if bets else None
 
-        browser.close()
+        context.close()
         log.info("Done — %d OddsAssist bets found.", len(bets))
         return bets, csv_path
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Scrape +EV bets from OddsAssist Pro")
+    p.add_argument("--login", action="store_true",
+                    help="Open a browser to log in via Google OAuth (run once)")
     p.add_argument("--sportsbooks", nargs="+", default=DEFAULT_SPORTSBOOKS)
     p.add_argument("--min-ev", type=float, default=DEFAULT_MIN_EV)
     p.add_argument("--max-odds", type=int, default=DEFAULT_MAX_ODDS)
@@ -657,13 +580,16 @@ def parse_args():
     p.add_argument("--output-dir", type=Path, default=Path("."))
     p.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--chromium-path", type=str, default=None)
-    p.add_argument("--email", type=str, default=None, help="OA login email (or set OA_EMAIL)")
-    p.add_argument("--password", type=str, default=None, help="OA login password (or set OA_PASSWORD)")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+
+    if args.login:
+        oa_login(chromium_path=args.chromium_path)
+        return
+
     try:
         bets, csv_path = scrape_oa(
             sportsbooks=args.sportsbooks,
@@ -673,8 +599,6 @@ def main():
             headless=args.headless,
             chromium_path=args.chromium_path,
             output_dir=args.output_dir,
-            email=args.email,
-            password=args.password,
         )
     except RuntimeError as e:
         log.error(str(e))

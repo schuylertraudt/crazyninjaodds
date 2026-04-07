@@ -62,8 +62,6 @@ log = logging.getLogger("cno-bot")
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
-OA_EMAIL = os.environ.get("OA_EMAIL", "")
-OA_PASSWORD = os.environ.get("OA_PASSWORD", "")
 OUTPUT_DIR = Path("./csv_output")
 
 intents = discord.Intents.default()
@@ -265,11 +263,8 @@ async def run_scrape_async(
             log.warning("CNO scraper failed: %s", e)
             return [], None
 
-    # Run OddsAssist scraper (only if credentials are set)
+    # Run OddsAssist scraper (only if browser profile exists)
     async def _run_oa():
-        if not OA_EMAIL or not OA_PASSWORD:
-            log.info("OddsAssist Pro credentials not set, skipping OA scraper")
-            return [], None
         try:
             bets, csv_path = await loop.run_in_executor(
                 None,
@@ -280,8 +275,6 @@ async def run_scrape_async(
                     min_odds=min_odds,
                     headless=True,
                     output_dir=OUTPUT_DIR,
-                    email=OA_EMAIL,
-                    password=OA_PASSWORD,
                 ),
             )
             return bets, csv_path
