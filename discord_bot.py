@@ -670,17 +670,78 @@ async def _ask_gemini(channel_id, user_name, question):
         return f"Gemini error: {e}", [], None
 
 
+# ---------------------------------------------------------------------------
+# Local intent detection fallback (no AI needed)
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate the user wants to see bets
+_BET_REQUEST_PATTERNS = re.compile(
+    r"\b(show|get|find|give|check|what|any|pull|fetch|grab|list|see)"
+    r".*\b(bets?|ev\b|odds|lines?|picks?|opportunities|plays?)\b",
+    re.IGNORECASE,
+)
+
+# Sportsbook name variants → canonical names
+_BOOK_ALIASES = {
+    "fanduel": "FanDuel", "fd": "FanDuel",
+    "draftkings": "DraftKings", "dk": "DraftKings",
+    "betmgm": "BetMGM", "mgm": "BetMGM",
+    "caesars": "Caesars", "czr": "Caesars",
+    "betrivers": "BetRivers", "br": "BetRivers", "bet rivers": "BetRivers",
+    "fanatics": "Fanatics", "fan": "Fanatics",
+}
+
+
+def _detect_bet_request(text):
+    """Check if the message is asking for bets. Returns (is_bet_request, sportsbooks).
+    Works without Gemini — pure regex/keyword matching."""
+    if not _BET_REQUEST_PATTERNS.search(text):
+        return False, []
+
+    # Extract sportsbook names
+    text_lower = text.lower()
+    found_books = []
+    for alias, canonical in _BOOK_ALIASES.items():
+        if alias in text_lower and canonical not in found_books:
+            found_books.append(canonical)
+
+    return True, found_books
+
+
 async def _handle_ai_response(channel, channel_id, user_name, question):
     """Common handler for AI responses — sends reply, embeds, and CSV."""
     async with channel.typing():
         reply, bets, csv_path = await _ask_gemini(channel_id, user_name, question)
 
-    # Send the AI's text reply
-    while reply:
-        await channel.send(reply[:1900])
-        reply = reply[1900:]
+    # If Gemini failed with rate limit but the user was asking for bets,
+    # fall back to running the scraper directly
+    if not bets and reply and ("rate limited" in reply.lower() or "429" in reply or "gemini error" in reply.lower()):
+        is_bet_req, detected_books = _detect_bet_request(question)
+        if is_bet_req:
+            fallback_msg = await channel.send(
+                "AI is rate-limited, but I detected a bet request — scraping directly..."
+            )
+            try:
+                bets, csv_path = await run_scrape_async(
+                    sportsbooks=detected_books or None,
+                )
+                await fallback_msg.edit(
+                    content=f"\u2705 Found **{len(bets)}** +EV bets!"
+                    + (f" (filtered to {', '.join(detected_books)})" if detected_books else "")
+                )
+            except Exception as e:
+                await fallback_msg.edit(content=f"Scrape failed: {e}")
+                return
+            # Don't send the error reply since we handled it
+            reply = None
 
-    # If the AI triggered a scrape, also send embeds and CSV
+    # Send the AI's text reply
+    if reply:
+        while reply:
+            await channel.send(reply[:1900])
+            reply = reply[1900:]
+
+    # If a scrape ran (via AI or fallback), send embeds and CSV
     if bets:
         embeds = format_bet_embeds(bets)
         for i in range(0, len(embeds), 10):
