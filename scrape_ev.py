@@ -22,6 +22,7 @@ logging.basicConfig(
 log = logging.getLogger("cno-ev")
 
 URL = "https://crazyninjaodds.com/site/tools/positive-ev.aspx"
+CNO_BASE_URL = "https://crazyninjaodds.com"
 
 DEFAULT_SPORTSBOOKS = [
     "FanDuel",
@@ -330,8 +331,19 @@ CANONICAL_FIELDS = [
 ]
 
 
+def _resolve_url(href):
+    """Resolve a (possibly relative) href against the CNO base URL."""
+    if not href:
+        return ""
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    if href.startswith("/"):
+        return CNO_BASE_URL + href
+    return href
+
+
 def detect_table(page):
-    """Try each table strategy and return (strategy_name, headers, rows_data)."""
+    """Try each table strategy and return (strategy_name, headers, rows_data, rows_links)."""
     for strat in TABLE_STRATEGIES:
         log.info("  Trying strategy: %s …", strat["name"])
         try:
@@ -374,27 +386,40 @@ def detect_table(page):
             continue
 
         rows_data = []
+        rows_links = []
         for i in range(rcount):
             row = row_els.nth(i)
             cell_els = row.locator(strat["cells"])
             ccount = cell_els.count()
             all_cells = []
+            all_links = []
             for j in range(ccount):
-                all_cells.append(cell_els.nth(j).inner_text().strip())
+                cell_el = cell_els.nth(j)
+                all_cells.append(cell_el.inner_text().strip())
+                try:
+                    a = cell_el.locator("a[href]")
+                    href = a.first.get_attribute("href") if a.count() > 0 else ""
+                    all_links.append(href or "")
+                except Exception:
+                    all_links.append("")
             # Only keep cells at positions that correspond to non-empty headers
             # This handles hidden/empty columns that exist in the DOM but aren't real data
             if ccount == hcount and hcount != len(non_empty_headers):
                 # Row has same cell count as total headers — pick only non-empty header positions
                 cells = [all_cells[idx] for idx in header_indices if idx < ccount]
+                links = [all_links[idx] for idx in header_indices if idx < ccount]
             else:
                 cells = all_cells
+                links = all_links
             if cells and any(c for c in cells):
                 rows_data.append(cells)
+                # First non-empty href in the row becomes the bet URL
+                rows_links.append(next((h for h in links if h), ""))
 
         if rows_data:
-            return strat["name"], non_empty_headers, rows_data
+            return strat["name"], non_empty_headers, rows_data, rows_links
 
-    return None, [], []
+    return None, [], [], []
 
 
 def map_columns(raw_headers):
@@ -417,7 +442,7 @@ def _clean_odds(val):
     return re.sub(r"\s*\(.*?\)\s*$", "", val).strip()
 
 
-def rows_to_dicts(headers, rows):
+def rows_to_dicts(headers, rows, row_links=None):
     """Convert list-of-lists into list-of-dicts using mapped headers."""
     mapped = map_columns(headers)
     log.info("Column mapping: %s", dict(zip(headers, mapped)))
@@ -451,7 +476,7 @@ def rows_to_dicts(headers, rows):
     results = []
     # Required fields that a real data row must have (not empty)
     required_fields = {"event", "odds", "sportsbook"}
-    for row in rows:
+    for row_idx, row in enumerate(rows):
         d = {}
         for i, col in enumerate(mapped):
             val = row[i] if i < len(row) else ""
@@ -469,6 +494,9 @@ def rows_to_dicts(headers, rows):
             d["odds"] = _clean_odds(d["odds"])
         if "fair_odds" in d:
             d["fair_odds"] = _clean_odds(d["fair_odds"])
+        # Attach bet URL extracted from the row's anchor tags
+        if row_links and row_idx < len(row_links) and row_links[row_idx]:
+            d["bet_url"] = _resolve_url(row_links[row_idx])
         # Skip junk rows (sub-headers, footers) that lack required data fields
         present = {f for f in required_fields if d.get(f)}
         if not present:
@@ -662,7 +690,7 @@ def scrape_ev(
 
         # Detect and parse table
         log.info("Detecting data table …")
-        strategy, headers, raw_rows = detect_table(page)
+        strategy, headers, raw_rows, raw_links = detect_table(page)
 
         if not raw_rows:
             log.error("No data rows found after trying all strategies!")
@@ -695,7 +723,7 @@ def scrape_ev(
         )
 
         # Map to structured dicts
-        bets = rows_to_dicts(headers, raw_rows)
+        bets = rows_to_dicts(headers, raw_rows, row_links=raw_links)
         if bets:
             log.info("Sample bet: %s", bets[0])
 

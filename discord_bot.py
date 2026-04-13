@@ -416,12 +416,15 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
             ev_display = str(ev).replace("%", "").replace("+", "").strip()
             source = bet.get("source", "").strip()
             source_tag = f" [{source}]" if source else ""
+            bet_url = bet.get("bet_url", "").strip()
             lines = [
                 f"\u27A1 **{pick}**" + (f" ({market})" if market else ""),
                 f"\U0001f4b2 Odds: **{odds}**" + (f" | Fair: **{fair}**" if fair else ""),
                 f"\U0001f4c8 EV: **{ev_display}%**",
                 f"\U0001f3e6 {book}" + (f" | {time}" if time else "") + source_tag,
             ]
+            if bet_url:
+                lines.append(f"\U0001f517 [View Bet]({bet_url})")
 
             bet_embed.add_field(
                 name=title,
