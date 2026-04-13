@@ -68,7 +68,13 @@ log = logging.getLogger("cno-bot")
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
+EV_NINJA_CHANNEL_ID = os.environ.get("EV_NINJA_CHANNEL_ID", "")
 OUTPUT_DIR = Path("./csv_output")
+
+# EV scanner thresholds — bets must meet ALL of these to be posted
+SCANNER_MIN_EV = 6.0      # EV% must be > 6%
+SCANNER_MAX_ODDS = 150    # odds must be <= +150
+SCANNER_MIN_ODDS = -150   # odds must be >= -150
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -519,6 +525,12 @@ async def on_ready():
     log.info("Bot ready: %s (id=%s)", bot.user, bot.user.id)
     if AUTO_CHANNEL_ID:
         log.info("Auto-post channel: %s", AUTO_CHANNEL_ID)
+    if not _ev_scanner_loop.is_running():
+        _ev_scanner_loop.start()
+        log.info(
+            "EV scanner started (every 5 min, min EV: %.0f%%, odds %d to +%d)",
+            SCANNER_MIN_EV, SCANNER_MIN_ODDS, SCANNER_MAX_ODDS,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -813,6 +825,63 @@ async def _auto_post_loop():
     if not bets:
         await channel.send("Scheduled scrape: no +EV bets found.")
         return
+
+    embeds = format_bet_embeds(bets)
+    for i in range(0, len(embeds), 10):
+        await channel.send(embeds=embeds[i : i + 10])
+
+    if csv_path and csv_path.exists():
+        await channel.send(
+            content="\U0001f4ce Full data attached:",
+            file=discord.File(str(csv_path)),
+        )
+
+
+@tasks.loop(minutes=5)
+async def _ev_scanner_loop():
+    """Scan for high-EV bets every 5 min and post to the ev-ninja channel.
+
+    Only posts when at least one bet meets ALL thresholds:
+      - EV% > SCANNER_MIN_EV (6%)
+      - odds between SCANNER_MIN_ODDS (-150) and SCANNER_MAX_ODDS (+150)
+    """
+    # Resolve the ev-ninja channel — prefer the env var, fall back to name search
+    channel = None
+    if EV_NINJA_CHANNEL_ID:
+        channel = bot.get_channel(int(EV_NINJA_CHANNEL_ID))
+    if channel is None:
+        for guild in bot.guilds:
+            channel = discord.utils.get(guild.text_channels, name="ev-ninja")
+            if channel:
+                break
+    if channel is None:
+        log.warning("EV scanner: ev-ninja channel not found — skipping")
+        return
+
+    log.info(
+        "EV scanner: scanning (min EV: %.0f%%, odds %d to +%d) …",
+        SCANNER_MIN_EV, SCANNER_MIN_ODDS, SCANNER_MAX_ODDS,
+    )
+    try:
+        bets, csv_path = await run_scrape_async(
+            min_ev=SCANNER_MIN_EV,
+            max_odds=SCANNER_MAX_ODDS,
+            min_odds=SCANNER_MIN_ODDS,
+        )
+    except Exception:
+        log.exception("EV scanner: scrape failed")
+        return
+
+    if not bets:
+        log.info("EV scanner: no bets matched thresholds — skipping post")
+        return
+
+    log.info("EV scanner: %d bet(s) matched — posting to #ev-ninja", len(bets))
+    now = datetime.now().strftime("%b %d, %I:%M %p")
+    await channel.send(
+        f"\U0001f6a8 **EV Alert** — {len(bets)} bet(s) with EV > {SCANNER_MIN_EV:.0f}% "
+        f"and odds between {SCANNER_MIN_ODDS} / +{SCANNER_MAX_ODDS} | {now}"
+    )
 
     embeds = format_bet_embeds(bets)
     for i in range(0, len(embeds), 10):
