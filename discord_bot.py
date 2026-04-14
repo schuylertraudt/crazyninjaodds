@@ -118,6 +118,34 @@ def _book_badge(name):
     return BOOK_BADGE.get(name.lower(), name[:3].upper())
 
 
+def _calc_kelly_bet(odds_str, fair_odds_str, bankroll=1000, kelly_fraction=0.15):
+    """Calculate fractional Kelly bet size from American odds and fair odds.
+    Returns a formatted dollar string like '$12.34', or '' if not computable."""
+    dec = _american_to_decimal(odds_str)
+    if dec is None or dec <= 1:
+        return ""
+    b = dec - 1  # profit per unit staked
+
+    fair_cleaned = str(fair_odds_str).replace("+", "").strip()
+    try:
+        fair_int = int(fair_cleaned)
+    except (ValueError, TypeError):
+        return ""
+
+    if fair_int > 0:
+        p = 100 / (fair_int + 100)
+    elif fair_int < 0:
+        p = abs(fair_int) / (abs(fair_int) + 100)
+    else:
+        return ""
+
+    kelly = (b * p - (1 - p)) / b
+    if kelly <= 0:
+        return ""
+
+    return f"${bankroll * kelly * kelly_fraction:.2f}"
+
+
 def _ev_bar(ev_val):
     """Visual bar for EV% — easier to scan on mobile."""
     try:
@@ -408,17 +436,19 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
             if sport:
                 title = f"{sport} \u2022 {event}"
 
-            # Kelly Criterion bet sizing: bankroll * kelly_pct * fractional_kelly
+            # Kelly Criterion bet sizing (15% fractional Kelly, $1000 bankroll).
+            # Prefer calculating from odds/fair_odds directly; fall back to CNO's
+            # kelly field if present.
             BANKROLL = 1000
             KELLY_FRACTION = 0.15
-            kelly_display = ""
-            kelly_raw = bet.get("kelly", "").replace("%", "").replace("+", "").strip()
-            try:
-                kelly_pct = float(kelly_raw) / 100
-                kelly_bet = BANKROLL * kelly_pct * KELLY_FRACTION
-                kelly_display = f"${kelly_bet:.2f}"
-            except (ValueError, TypeError):
-                pass
+            kelly_display = _calc_kelly_bet(odds, fair, BANKROLL, KELLY_FRACTION)
+            if not kelly_display:
+                kelly_raw = bet.get("kelly", "").replace("%", "").replace("+", "").strip()
+                try:
+                    kelly_pct = float(kelly_raw) / 100
+                    kelly_display = f"${BANKROLL * kelly_pct * KELLY_FRACTION:.2f}"
+                except (ValueError, TypeError):
+                    pass
 
             # Field value: simple, no backticks or complex nesting
             ev_display = str(ev).replace("%", "").replace("+", "").strip()
