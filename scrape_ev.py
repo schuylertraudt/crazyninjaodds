@@ -35,8 +35,8 @@ DEFAULT_MIN_EV = 1.0
 DEFAULT_MAINLINES_ONLY = True
 DEFAULT_DEVIG = "Liquidity-Weighted Worst-case"
 DEFAULT_MIN_BOOKS = 3
-DEFAULT_MAX_ODDS = 250    # filter out odds > +250
-DEFAULT_MIN_ODDS = -200   # filter out odds < -200
+DEFAULT_MAX_ODDS = 600    # filter out odds > +600
+DEFAULT_MIN_ODDS = -400   # filter out odds < -400
 TABLE_TIMEOUT_MS = 30_000
 
 
