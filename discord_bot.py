@@ -36,13 +36,15 @@ import os
 import re
 import shlex
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
 
+import bet_history
 from scrape_ev import (
     DEFAULT_DEVIG,
     DEFAULT_MAX_ODDS,
@@ -69,6 +71,8 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
 OUTPUT_DIR = Path("./csv_output")
+UNIT_BET = float(os.environ.get("CNO_UNIT_BET", "100"))  # $ per bet for performance reports
+EASTERN = ZoneInfo("America/New_York")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -539,6 +543,80 @@ async def run_scrape_async(
 
 
 # ---------------------------------------------------------------------------
+# Performance report
+# ---------------------------------------------------------------------------
+
+_REPORT_PERIODS = [
+    ("Past 24 Hours",   1),
+    ("Past 7 Days",     7),
+    ("Past 30 Days",    30),
+    ("Past 90 Days",    90),
+    ("Past Year",       365),
+    ("All Time",        None),
+]
+
+
+def _calc_period_stats(bets: list) -> dict:
+    count = len(bets)
+    staked = count * UNIT_BET
+    expected_profit = 0.0
+    for b in bets:
+        ev_str = str(b.get("ev_pct", "0")).replace("%", "").replace("+", "").strip()
+        try:
+            ev = float(ev_str)
+        except ValueError:
+            ev = 0.0
+        expected_profit += UNIT_BET * ev / 100
+    return {
+        "count": count,
+        "staked": staked,
+        "expected_return": staked + expected_profit,
+        "expected_profit": expected_profit,
+        "roi": (expected_profit / staked * 100) if staked else 0.0,
+    }
+
+
+def format_performance_embed() -> discord.Embed:
+    """Build the daily performance report embed."""
+    now_ts = datetime.now(timezone.utc).timestamp()
+    today = datetime.now(EASTERN).strftime("%b %d, %Y")
+
+    embed = discord.Embed(
+        title=f"\U0001f4ca Auto-Post Performance Report — {today}",
+        description=f"Expected returns assuming **${UNIT_BET:.0f} flat stake** per auto-posted bet",
+        color=0x5865F2,
+    )
+
+    for label, days in _REPORT_PERIODS:
+        if days is None:
+            bets = bet_history.get_all_bets()
+        else:
+            since = now_ts - days * 86400
+            bets = bet_history.get_bets_since(since)
+
+        if not bets:
+            embed.add_field(name=label, value="No bets recorded yet", inline=False)
+            continue
+
+        s = _calc_period_stats(bets)
+        sign = "+" if s["expected_profit"] >= 0 else ""
+        embed.add_field(
+            name=label,
+            value=(
+                f"**{s['count']}** bets \u2022 "
+                f"Down: **${s['staked']:,.0f}** \u2022 "
+                f"Return: **${s['expected_return']:,.2f}** \u2022 "
+                f"Profit: **{sign}${s['expected_profit']:,.2f}** \u2022 "
+                f"ROI: **{sign}{s['roi']:.1f}%**"
+            ),
+            inline=False,
+        )
+
+    embed.set_footer(text="Expected values based on stated EV% \u2014 actual results vary with variance")
+    return embed
+
+
+# ---------------------------------------------------------------------------
 # Bot events
 # ---------------------------------------------------------------------------
 
@@ -552,6 +630,9 @@ async def on_ready():
             _auto_post_loop._channel_id = AUTO_CHANNEL_ID
             _auto_post_loop.start()
             log.info("Auto-post loop started (every 15 min) on channel %s", AUTO_CHANNEL_ID)
+        if not _daily_report_loop.is_running():
+            _daily_report_loop.start()
+            log.info("Daily report loop started (3 AM ET)")
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +937,10 @@ async def _auto_post_loop():
         log.info("Auto-post: no new bets since last run")
         return
 
+    # Persist to history before posting
+    for b in new_bets:
+        bet_history.log_bet(b)
+
     embeds = format_bet_embeds(new_bets)
     for i in range(0, len(embeds), 10):
         await channel.send(embeds=embeds[i : i + 10])
@@ -865,6 +950,24 @@ async def _auto_post_loop():
             content="\U0001f4ce Full data attached:",
             file=discord.File(str(csv_path)),
         )
+
+
+@tasks.loop(time=datetime.time(hour=3, minute=0, tzinfo=ZoneInfo("America/New_York")))
+async def _daily_report_loop():
+    """Post the performance summary every day at 3 AM Eastern."""
+    channel_id = AUTO_CHANNEL_ID
+    if not channel_id:
+        return
+    channel = bot.get_channel(int(channel_id))
+    if not channel:
+        return
+
+    log.info("Daily report: generating performance summary …")
+    try:
+        embed = format_performance_embed()
+        await channel.send(embed=embed)
+    except Exception:
+        log.exception("Daily report failed")
 
 
 # ---------------------------------------------------------------------------
@@ -1372,4 +1475,5 @@ if __name__ == "__main__":
         )
         raise SystemExit(1)
 
+    bet_history.init_db()
     bot.run(TOKEN)
