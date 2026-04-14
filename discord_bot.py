@@ -399,22 +399,40 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
             fair = bet.get("fair_odds", "").strip()
             ev = bet.get("ev_pct", "").strip() or "\u2014"
             book = bet.get("sportsbook", "").strip() or "\u2014"
-            time = bet.get("game_time", "").strip()
+            book_url = bet.get("sportsbook_url", "").strip()
+            books_count = bet.get("books", "").strip()
+            game_time = bet.get("game_time", "").strip()
 
             # Field name: event
             title = event
             if sport:
                 title = f"{sport} \u2022 {event}"
 
+            # Kelly Criterion bet sizing: bankroll * kelly_pct * fractional_kelly
+            BANKROLL = 1000
+            KELLY_FRACTION = 0.15
+            kelly_display = ""
+            kelly_raw = bet.get("kelly", "").replace("%", "").replace("+", "").strip()
+            try:
+                kelly_pct = float(kelly_raw) / 100
+                kelly_bet = BANKROLL * kelly_pct * KELLY_FRACTION
+                kelly_display = f"${kelly_bet:.2f}"
+            except (ValueError, TypeError):
+                pass
+
             # Field value: simple, no backticks or complex nesting
             ev_display = str(ev).replace("%", "").replace("+", "").strip()
             source = bet.get("source", "").strip()
             source_tag = f" [{source}]" if source else ""
+            book_display = f"[{book}]({book_url})" if book_url else book
             lines = [
                 f"\u27A1 **{pick}**" + (f" ({market})" if market else ""),
                 f"\U0001f4b2 Odds: **{odds}**" + (f" | Fair: **{fair}**" if fair else ""),
-                f"\U0001f4c8 EV: **{ev_display}%**",
-                f"\U0001f3e6 {book}" + (f" | {time}" if time else "") + source_tag,
+                f"\U0001f4c8 EV: **{ev_display}%**" + (f" | Kelly: **{kelly_display}**" if kelly_display else ""),
+                f"\U0001f3e6 {book_display}"
+                + (f" | Books: {books_count}" if books_count else "")
+                + (f" | {game_time}" if game_time else "")
+                + source_tag,
             ]
 
             bet_embed.add_field(
