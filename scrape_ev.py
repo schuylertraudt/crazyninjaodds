@@ -120,6 +120,32 @@ def apply_filters(page, args):
     if controls aren't found (DOM may vary across site versions)."""
     log.info("Applying filters …")
 
+    # --- Sportsbook dropdown (must go FIRST — triggers a server-side postback) ---
+    # The CNO page has a server-side <select> that filters which book's bets are
+    # returned in the table. Fresh sessions with no cookies get a single-book default.
+    # Selecting index 0 ("-- All --" or equivalent) forces all books to be returned
+    # so the client-side sportsbook filter can do its job.
+    try:
+        sb_select = page.locator(
+            "select[id*='DropDownListSportsbookSite_All'], "
+            "select[name*='DropDownListSportsbookSite_All']"
+        )
+        if sb_select.count() > 0:
+            opts = sb_select.first.locator("option")
+            first_text = opts.first.inner_text().strip() if opts.count() > 0 else "?"
+            log.info("  Sportsbook dropdown first option: %r", first_text)
+            sb_select.first.select_option(index=0)
+            log.info("  Sportsbook filter → All (first option: %s)", first_text)
+            # Wait for the postback/AJAX update to finish
+            try:
+                page.wait_for_load_state("networkidle", timeout=8_000)
+            except Exception:
+                page.wait_for_timeout(3_000)
+        else:
+            log.warning("  Sportsbook dropdown (DropDownListSportsbookSite_All) not found")
+    except Exception as e:
+        log.warning("  Could not set sportsbook filter: %s", e)
+
     # --- Devig method dropdown ---
     try:
         devig_sel = page.locator(
