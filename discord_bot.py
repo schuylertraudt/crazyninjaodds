@@ -837,7 +837,11 @@ async def _auto_post_loop():
 
     log.info("Auto-post: running scheduled scrape …")
     try:
-        bets, csv_path = await run_scrape_async()
+        bets, csv_path = await run_scrape_async(
+            min_ev=6.0,
+            min_odds=-150,
+            max_odds=150,
+        )
     except Exception as e:
         log.exception("Scheduled scrape failed")
         await channel.send(f"Scheduled scrape failed: {e}")
