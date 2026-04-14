@@ -727,11 +727,16 @@ def scrape_ev(
 
         # Client-side sportsbook filter — use partial matching so that site-side
         # name variants (e.g. "DraftKings Sportsbook" matching "DraftKings") don't
-        # silently drop valid bets.
+        # silently drop valid bets.  Canadian provincial suffixes (e.g. "(ON)")
+        # are explicitly rejected so Canadian variants don't bleed through.
+        _CA_SUFFIXES = {" (on)", " (bc)", " (ab)", " (qc)", " (mb)", " (sk)",
+                        " (ns)", " (nb)", " (pe)", " (nl)"}
         sb_lower = [s.lower() for s in sportsbooks]
 
         def _matches_sportsbook(name):
             n = name.lower().strip()
+            if any(n.endswith(sfx) for sfx in _CA_SUFFIXES):
+                return False
             return any(s in n or n in s for s in sb_lower)
 
         if any("sportsbook" in b for b in bets):

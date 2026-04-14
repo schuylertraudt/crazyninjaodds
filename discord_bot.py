@@ -78,6 +78,35 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 _scrape_task = None
 _schedule_interval = None
 
+# De-duplication: track bets already posted so the auto-post loop only sends new ones
+_posted_bets: dict = {}   # {bet_key: posted_timestamp}
+DEDUP_HOURS = 4           # Don't re-post the same bet within this window
+
+
+def _bet_key(bet: dict) -> tuple:
+    """Stable identifier for a bet — event + market + pick + book."""
+    return (
+        bet.get("event", "").strip().lower(),
+        bet.get("market", "").strip().lower(),
+        bet.get("bet_name", "").strip().lower(),
+        bet.get("sportsbook", "").strip().lower(),
+    )
+
+
+def _filter_new_bets(bets: list) -> list:
+    """Return only bets not posted in the last DEDUP_HOURS hours."""
+    global _posted_bets
+    now = time.time()
+    _posted_bets = {k: v for k, v in _posted_bets.items() if now - v < DEDUP_HOURS * 3600}
+    new_bets = []
+    for bet in bets:
+        key = _bet_key(bet)
+        if key not in _posted_bets:
+            new_bets.append(bet)
+            _posted_bets[key] = now
+    log.info("Dedup: %d total bets, %d new", len(bets), len(new_bets))
+    return new_bets
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -815,10 +844,15 @@ async def _auto_post_loop():
         return
 
     if not bets:
-        await channel.send("Scheduled scrape: no +EV bets found.")
+        log.info("Auto-post: no bets after filters")
         return
 
-    embeds = format_bet_embeds(bets)
+    new_bets = _filter_new_bets(bets)
+    if not new_bets:
+        log.info("Auto-post: no new bets since last run")
+        return
+
+    embeds = format_bet_embeds(new_bets)
     for i in range(0, len(embeds), 10):
         await channel.send(embeds=embeds[i : i + 10])
 
