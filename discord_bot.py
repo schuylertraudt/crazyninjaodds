@@ -556,17 +556,31 @@ _REPORT_PERIODS = [
 ]
 
 
+def _parse_kelly_stake(bet: dict) -> float:
+    """Return the Kelly stake in dollars from a stored bet record, or UNIT_BET as fallback."""
+    raw = str(bet.get("kelly", "")).replace("$", "").replace("%", "").replace("+", "").strip()
+    try:
+        val = float(raw)
+        if val > 0:
+            return val
+    except ValueError:
+        pass
+    return UNIT_BET
+
+
 def _calc_period_stats(bets: list) -> dict:
     count = len(bets)
-    staked = count * UNIT_BET
+    staked = 0.0
     expected_profit = 0.0
     for b in bets:
+        stake = _parse_kelly_stake(b)
+        staked += stake
         ev_str = str(b.get("ev_pct", "0")).replace("%", "").replace("+", "").strip()
         try:
             ev = float(ev_str)
         except ValueError:
             ev = 0.0
-        expected_profit += UNIT_BET * ev / 100
+        expected_profit += stake * ev / 100
     return {
         "count": count,
         "staked": staked,
@@ -583,7 +597,7 @@ def format_performance_embed() -> discord.Embed:
 
     embed = discord.Embed(
         title=f"\U0001f4ca Auto-Post Performance Report — {today}",
-        description=f"Expected returns assuming **${UNIT_BET:.0f} flat stake** per auto-posted bet",
+        description="Expected returns using **Kelly criterion stake** per auto-posted bet (falls back to flat $100 if unavailable)",
         color=0x5865F2,
     )
 
