@@ -84,6 +84,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 _scrape_task = None
 _schedule_interval = None
 
+# Deduplication for the EV scanner — maps bet fingerprint → timestamp first posted
+# Entries expire after SCANNER_BET_EXPIRY_HOURS so a bet can resurface the next day
+_posted_bets: dict = {}
+SCANNER_BET_EXPIRY_HOURS = 8
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -840,6 +845,33 @@ async def _auto_post_loop():
         )
 
 
+def _bet_key(bet: dict) -> str:
+    """Stable fingerprint for a bet — event + pick + book + market."""
+    return "|".join([
+        bet.get("event", "").strip().lower(),
+        bet.get("bet_name", "").strip().lower(),
+        bet.get("sportsbook", "").strip().lower(),
+        bet.get("market", "").strip().lower(),
+    ])
+
+
+def _filter_new_bets(bets: list) -> list:
+    """Return only bets not yet posted. Evicts entries older than expiry first."""
+    now = time.time()
+    expiry_secs = SCANNER_BET_EXPIRY_HOURS * 3600
+    expired = [k for k, t in _posted_bets.items() if now - t > expiry_secs]
+    for k in expired:
+        del _posted_bets[k]
+    return [b for b in bets if _bet_key(b) not in _posted_bets]
+
+
+def _mark_bets_posted(bets: list) -> None:
+    """Record bets as posted so they are skipped in future scans."""
+    now = time.time()
+    for bet in bets:
+        _posted_bets[_bet_key(bet)] = now
+
+
 @tasks.loop(minutes=5)
 async def _ev_scanner_loop():
     """Scan for high-EV bets every 5 min and post to the ev-ninja channel.
@@ -879,14 +911,21 @@ async def _ev_scanner_loop():
         log.info("EV scanner: no bets matched thresholds — skipping post")
         return
 
-    log.info("EV scanner: %d bet(s) matched — posting to #ev-ninja", len(bets))
+    new_bets = _filter_new_bets(bets)
+    if not new_bets:
+        log.info("EV scanner: %d matching bet(s) already posted — skipping", len(bets))
+        return
+
+    _mark_bets_posted(new_bets)
+    log.info("EV scanner: %d new bet(s) — posting to #ev-ninja (%d already seen)",
+             len(new_bets), len(bets) - len(new_bets))
     now = datetime.now().strftime("%b %d, %I:%M %p")
     await channel.send(
-        f"\U0001f6a8 **EV Alert** — {len(bets)} bet(s) with EV > {SCANNER_MIN_EV:.0f}% "
+        f"\U0001f6a8 **EV Alert** — {len(new_bets)} new bet(s) with EV > {SCANNER_MIN_EV:.0f}% "
         f"and odds between {SCANNER_MIN_ODDS} / +{SCANNER_MAX_ODDS} | {now}"
     )
 
-    embeds = format_bet_embeds(bets)
+    embeds = format_bet_embeds(new_bets)
     for i in range(0, len(embeds), 10):
         await channel.send(embeds=embeds[i : i + 10])
 
