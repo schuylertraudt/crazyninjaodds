@@ -699,16 +699,18 @@ def scrape_ev(
         if bets:
             log.info("Sample bet: %s", bets[0])
 
-        # Client-side sportsbook filter
-        sb_lower = {s.lower() for s in sportsbooks}
+        # Client-side sportsbook filter — use partial matching so that site-side
+        # name variants (e.g. "DraftKings Sportsbook" matching "DraftKings") don't
+        # silently drop valid bets.
+        sb_lower = [s.lower() for s in sportsbooks]
+
+        def _matches_sportsbook(name):
+            n = name.lower().strip()
+            return any(s in n or n in s for s in sb_lower)
+
         if any("sportsbook" in b for b in bets):
             before = len(bets)
-            bets = [
-                b
-                for b in bets
-                if b.get("sportsbook")
-                and b["sportsbook"].lower() in sb_lower
-            ]
+            bets = [b for b in bets if b.get("sportsbook") and _matches_sportsbook(b["sportsbook"])]
             if len(bets) < before:
                 log.info(
                     "Filtered sportsbooks: %d → %d rows", before, len(bets)

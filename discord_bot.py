@@ -519,6 +519,10 @@ async def on_ready():
     log.info("Bot ready: %s (id=%s)", bot.user, bot.user.id)
     if AUTO_CHANNEL_ID:
         log.info("Auto-post channel: %s", AUTO_CHANNEL_ID)
+        if not _auto_post_loop.is_running():
+            _auto_post_loop._channel_id = AUTO_CHANNEL_ID
+            _auto_post_loop.start()
+            log.info("Auto-post loop started (every 15 min) on channel %s", AUTO_CHANNEL_ID)
 
 
 # ---------------------------------------------------------------------------
