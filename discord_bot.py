@@ -69,6 +69,7 @@ log = logging.getLogger("cno-bot")
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
+AUTO_SCHEDULE_MINUTES = int(os.environ.get("CNO_SCHEDULE_MINUTES", "5"))
 OUTPUT_DIR = Path("./csv_output")
 
 intents = discord.Intents.default()
@@ -518,8 +519,16 @@ async def run_scrape_async(
 @bot.event
 async def on_ready():
     log.info("Bot ready: %s (id=%s)", bot.user, bot.user.id)
-    if AUTO_CHANNEL_ID:
-        log.info("Auto-post channel: %s", AUTO_CHANNEL_ID)
+    if AUTO_CHANNEL_ID and AUTO_SCHEDULE_MINUTES > 0:
+        log.info(
+            "Auto-starting schedule: every %d min → channel %s",
+            AUTO_SCHEDULE_MINUTES, AUTO_CHANNEL_ID,
+        )
+        _auto_post_loop._channel_id = int(AUTO_CHANNEL_ID)
+        if _auto_post_loop.is_running():
+            _auto_post_loop.cancel()
+        _auto_post_loop.change_interval(minutes=AUTO_SCHEDULE_MINUTES)
+        _auto_post_loop.start()
 
 
 # ---------------------------------------------------------------------------
