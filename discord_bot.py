@@ -70,6 +70,9 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
 AUTO_SCHEDULE_MINUTES = int(os.environ.get("CNO_SCHEDULE_MINUTES", "5"))
+# Kelly Criterion display settings — bankroll and fractional multiplier
+KELLY_BANKROLL = 1000   # assumed bankroll in dollars
+KELLY_FRACTION = 0.15   # fractional Kelly multiplier (15%)
 # Scheduled-scrape filters — override defaults via env vars in the service file
 AUTO_MIN_EV = float(os.environ.get("CNO_AUTO_MIN_EV", str(DEFAULT_MIN_EV)))
 AUTO_MIN_ODDS = int(os.environ.get("CNO_AUTO_MIN_ODDS", str(DEFAULT_MIN_ODDS)))
@@ -405,22 +408,45 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
             fair = bet.get("fair_odds", "").strip()
             ev = bet.get("ev_pct", "").strip() or "\u2014"
             book = bet.get("sportsbook", "").strip() or "\u2014"
-            time = bet.get("game_time", "").strip()
+            book_url = bet.get("sportsbook_url", "").strip()
+            time_str = bet.get("game_time", "").strip()
+            books_count = bet.get("books", "").strip()
+
+            # Kelly dollar suggestion: CNO kelly% × bankroll × fractional multiplier
+            kelly_display = ""
+            try:
+                kelly_raw = str(bet.get("kelly", "")).replace("%", "").replace("+", "").strip()
+                kelly_raw = re.sub(r"\s*\(.*?\)\s*$", "", kelly_raw).strip()
+                if kelly_raw:
+                    kelly_pct = float(kelly_raw)
+                    # CNO expresses Kelly as a percentage of bankroll (e.g. 4.2 = 4.2%)
+                    if kelly_pct > 1:
+                        kelly_pct /= 100
+                    kelly_dollars = kelly_pct * KELLY_BANKROLL * KELLY_FRACTION
+                    kelly_display = f"${kelly_dollars:.2f}"
+            except (ValueError, TypeError):
+                pass
 
             # Field name: event
             title = event
             if sport:
                 title = f"{sport} \u2022 {event}"
 
-            # Field value: simple, no backticks or complex nesting
+            # Sportsbook line — use URL hyperlink if available
+            book_link = f"[{book}]({book_url})" if book_url else book
+
             ev_display = str(ev).replace("%", "").replace("+", "").strip()
             source = bet.get("source", "").strip()
             source_tag = f" [{source}]" if source else ""
             lines = [
                 f"\u27A1 **{pick}**" + (f" ({market})" if market else ""),
                 f"\U0001f4b2 Odds: **{odds}**" + (f" | Fair: **{fair}**" if fair else ""),
-                f"\U0001f4c8 EV: **{ev_display}%**",
-                f"\U0001f3e6 {book}" + (f" | {time}" if time else "") + source_tag,
+                f"\U0001f4c8 EV: **{ev_display}%**"
+                + (f" | Kelly: **{kelly_display}**" if kelly_display else ""),
+                f"\U0001f3e6 {book_link}"
+                + (f" | Books: {books_count}" if books_count else "")
+                + (f" | {time_str}" if time_str else "")
+                + source_tag,
             ]
 
             bet_embed.add_field(

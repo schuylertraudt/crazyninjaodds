@@ -25,20 +25,43 @@ The scraper has two interfaces:
 
 Key components:
 - `apply_filters(page, args)` — best-effort DOM manipulation to set page filters (devig method, min EV, min books, mainlines)
-- `detect_table(page)` — tries 6 selector strategies in order (HTML table, AG Grid, role-grid, Kendo, DevExpress, div-table)
-- `COLUMN_ALIASES` / `map_columns()` — normalizes ~40 header name variants to 10 canonical fields
+- `detect_table(page)` — tries 6 selector strategies; returns `(strategy_name, headers, rows_data, url_rows)`. `url_rows` has the same shape as `rows_data` but contains the first `href` found in each cell.
+- `rows_to_dicts(headers, rows, url_rows=None)` — normalizes ~40 header name variants to canonical fields. When `url_rows` is provided, stores URLs as `{field}_url` keys in each dict (e.g. `sportsbook_url`, `event_url`).
+- `COLUMN_ALIASES` / `map_columns()` — normalizes header variants to canonical names
 - `setup_api_intercept(page)` — optional XHR/fetch response capture for API discovery
 - `write_csv()` / `print_table()` — output to timestamped CSV and rich console table
 
 Canonical fields: `sport_league`, `event`, `game_time`, `market`, `bet_name`, `sportsbook`, `odds`, `fair_odds`, `ev_pct`, `kelly`
+
+Extra fields captured if present in table: `books` (number of books with the line)
+
+URL fields populated from table `<a>` hrefs: `sportsbook_url`, `event_url` (relative CNO URLs resolved to absolute)
 
 ### discord_bot.py
 
 - Uses `discord.py` with `commands.Bot` (prefix: `!`)
 - Runs `scrape_ev()` in a thread pool via `asyncio.run_in_executor` to avoid blocking
 - Commands: `!ev`, `!evschedule <minutes>`, `!evschedule off`, `!evstop`
-- Posts: embed summary (top 5 by EV%, sportsbook breakdown), text listing (max 25), CSV attachment
+- Posts: embed summary (sportsbook breakdown, EV range), paginated bet embeds, CSV attachment
 - Messages chunked to fit Discord's 2000-char limit
+
+### Embed format (per bet)
+
+Each bet field in the embed shows:
+```
+{Sport} • {Event}
+➡ **{Pick}** ({Market})
+💲 Odds: **{odds}** | Fair: **{fair_odds}**
+📈 EV: **{ev}%** | Kelly: **${kelly_dollars}**
+🏦 [{Sportsbook}]({sportsbook_url}) | Books: {books} | {game_time}
+```
+
+**Kelly dollar calculation:** `kelly_pct_from_CNO / 100 × KELLY_BANKROLL × KELLY_FRACTION`
+- `KELLY_BANKROLL = 1000` (assumed bankroll)
+- `KELLY_FRACTION = 0.15` (15% fractional Kelly)
+- Both constants are defined at the top of `discord_bot.py` — change them there, not anywhere else.
+
+**Sportsbook link:** uses `sportsbook_url` scraped from the CNO table's sportsbook column `<a>` href. This is the direct deep-link to place the bet, NOT the CNO event page link.
 
 ## Development
 
