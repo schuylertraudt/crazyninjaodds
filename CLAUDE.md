@@ -56,12 +56,16 @@ Each bet field in the embed shows:
 🏦 [{Sportsbook}]({sportsbook_url}) | Books: {books} | {game_time}
 ```
 
-**Kelly dollar calculation:** `kelly_pct_from_CNO / 100 × KELLY_BANKROLL × KELLY_FRACTION`
+**Kelly dollar calculation:** computed by `_kelly_dollars(bet)` in `discord_bot.py` directly from `odds` and `fair_odds` fields — does NOT rely on the CNO kelly column.
+- Formula: `kelly_frac = (b × p − (1−p)) / b` where `p` = true probability from fair_odds, `b` = profit-per-unit from book odds
+- Dollar stake: `kelly_frac × KELLY_BANKROLL × KELLY_FRACTION`
 - `KELLY_BANKROLL = 1000` (assumed bankroll)
 - `KELLY_FRACTION = 0.15` (15% fractional Kelly)
 - Both constants are defined at the top of `discord_bot.py` — change them there, not anywhere else.
 
 **Sportsbook link:** uses `sportsbook_url` scraped from the CNO table's sportsbook column `<a>` href. This is the direct deep-link to place the bet, NOT the CNO event page link.
+
+**Deduplication:** `_posted_bets` set in `discord_bot.py` tracks `(sportsbook, event, bet_name, market)` tuples. The auto-loop filters these out before posting so the same bet is never posted twice in a session. Cleared on bot restart.
 
 ## Development
 

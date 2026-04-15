@@ -87,6 +87,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 _scrape_task = None
 _schedule_interval = None
 
+# Deduplication: bets already posted by the auto-loop this session
+# Key: (sportsbook, event, bet_name, market) — cleared on restart
+_posted_bets: set = set()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,6 +124,39 @@ def _ev_sort_key(bet):
         return float(raw)
     except ValueError:
         return 0.0
+
+
+def _kelly_dollars(bet):
+    """Calculate fractional Kelly stake in dollars from fair_odds + book odds.
+    Uses KELLY_BANKROLL and KELLY_FRACTION constants.
+    Returns a formatted string like '$11.59', or '' if odds can't be parsed."""
+    try:
+        odds_str = str(bet.get("odds", "")).replace("+", "").strip()
+        fair_str = str(bet.get("fair_odds", "")).replace("+", "").strip()
+        # Strip any parenthetical or non-numeric suffixes
+        odds_str = re.sub(r"[^0-9\-]", "", odds_str)
+        fair_str = re.sub(r"[^0-9\-]", "", fair_str)
+        if not odds_str or not fair_str:
+            return ""
+        book_odds = int(odds_str)
+        fair_odds = int(fair_str)
+        # Convert fair American odds → true probability
+        if fair_odds > 0:
+            fair_prob = 100 / (100 + fair_odds)
+        else:
+            fair_prob = abs(fair_odds) / (abs(fair_odds) + 100)
+        # Convert book American odds → decimal profit-per-unit
+        if book_odds > 0:
+            b = book_odds / 100
+        else:
+            b = 100 / abs(book_odds)
+        kelly_frac = (b * fair_prob - (1 - fair_prob)) / b
+        if kelly_frac <= 0:
+            return ""
+        dollars = kelly_frac * KELLY_BANKROLL * KELLY_FRACTION
+        return f"${dollars:.2f}"
+    except (ValueError, TypeError, ZeroDivisionError):
+        return ""
 
 
 def _book_badge(name):
@@ -411,21 +448,7 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
             book_url = bet.get("sportsbook_url", "").strip()
             time_str = bet.get("game_time", "").strip()
             books_count = bet.get("books", "").strip()
-
-            # Kelly dollar suggestion: CNO kelly% × bankroll × fractional multiplier
-            kelly_display = ""
-            try:
-                kelly_raw = str(bet.get("kelly", "")).replace("%", "").replace("+", "").strip()
-                kelly_raw = re.sub(r"\s*\(.*?\)\s*$", "", kelly_raw).strip()
-                if kelly_raw:
-                    kelly_pct = float(kelly_raw)
-                    # CNO expresses Kelly as a percentage of bankroll (e.g. 4.2 = 4.2%)
-                    if kelly_pct > 1:
-                        kelly_pct /= 100
-                    kelly_dollars = kelly_pct * KELLY_BANKROLL * KELLY_FRACTION
-                    kelly_display = f"${kelly_dollars:.2f}"
-            except (ValueError, TypeError):
-                pass
+            kelly_display = _kelly_dollars(bet)
 
             # Field name: event
             title = event
@@ -858,11 +881,29 @@ async def _auto_post_loop():
             max_odds=AUTO_MAX_ODDS,
         )
 
-        if not bets:
-            await channel.send("Scheduled scrape: no +EV bets found.")
+        # Deduplicate — skip bets already posted this session
+        def _bet_key(b):
+            return (
+                b.get("sportsbook", "").strip().lower(),
+                b.get("event", "").strip().lower(),
+                b.get("bet_name", "").strip().lower(),
+                b.get("market", "").strip().lower(),
+            )
+
+        new_bets = [b for b in bets if _bet_key(b) not in _posted_bets]
+        skipped = len(bets) - len(new_bets)
+        if skipped:
+            log.info("Dedup: skipping %d already-posted bets, %d new", skipped, len(new_bets))
+
+        if not new_bets:
+            log.info("Scheduled scrape: all %d bets already posted, nothing new.", len(bets))
             return
 
-        embeds = format_bet_embeds(bets)
+        # Mark new bets as posted before sending (so a send failure doesn't re-post)
+        for b in new_bets:
+            _posted_bets.add(_bet_key(b))
+
+        embeds = format_bet_embeds(new_bets)
         for i in range(0, len(embeds), 10):
             await channel.send(embeds=embeds[i : i + 10])
 
