@@ -70,6 +70,10 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
 AUTO_SCHEDULE_MINUTES = int(os.environ.get("CNO_SCHEDULE_MINUTES", "5"))
+# Scheduled-scrape filters — override defaults via env vars in the service file
+AUTO_MIN_EV = float(os.environ.get("CNO_AUTO_MIN_EV", str(DEFAULT_MIN_EV)))
+AUTO_MIN_ODDS = int(os.environ.get("CNO_AUTO_MIN_ODDS", str(DEFAULT_MIN_ODDS)))
+AUTO_MAX_ODDS = int(os.environ.get("CNO_AUTO_MAX_ODDS", str(DEFAULT_MAX_ODDS)))
 OUTPUT_DIR = Path("./csv_output")
 
 intents = discord.Intents.default()
@@ -817,9 +821,16 @@ async def _auto_post_loop():
     log.info("Auto-post: waiting %.0fs jitter before scrape …", jitter_s)
     await asyncio.sleep(jitter_s)
 
-    log.info("Auto-post: running scheduled scrape …")
+    log.info(
+        "Auto-post: running scheduled scrape (min_ev=%.1f, odds=%d..+%d) …",
+        AUTO_MIN_EV, AUTO_MIN_ODDS, AUTO_MAX_ODDS,
+    )
     try:
-        bets, csv_path = await run_scrape_async()
+        bets, csv_path = await run_scrape_async(
+            min_ev=AUTO_MIN_EV,
+            min_odds=AUTO_MIN_ODDS,
+            max_odds=AUTO_MAX_ODDS,
+        )
 
         if not bets:
             await channel.send("Scheduled scrape: no +EV bets found.")

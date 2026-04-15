@@ -68,7 +68,21 @@ python discord_bot.py
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DISCORD_TOKEN` | For bot only | Discord bot token |
-| `CNO_CHANNEL_ID` | No | Auto-post channel ID |
+| `CNO_CHANNEL_ID` | No | Auto-post channel ID — if set, bot auto-arms the schedule on startup |
+| `CNO_SCHEDULE_MINUTES` | No | Auto-post interval in minutes (default: 5) |
+| `CNO_AUTO_MIN_EV` | No | Min EV% for scheduled scrapes (default: 6.0) |
+| `CNO_AUTO_MIN_ODDS` | No | Min odds for scheduled scrapes, e.g. -150 (default: -150) |
+| `CNO_AUTO_MAX_ODDS` | No | Max odds for scheduled scrapes, e.g. 150 (default: 150) |
+
+### Two Operating Modes
+
+**`!ev` command** — on-demand, uses all defaults (min EV 1%, odds -200 to +250). Controlled entirely by flags passed in Discord.
+
+**Scheduled auto-post** — fires every `CNO_SCHEDULE_MINUTES`, uses tighter filters configured via env vars in the systemd service file:
+- Currently: `CNO_AUTO_MIN_EV=6`, `CNO_AUTO_MIN_ODDS=-150`, `CNO_AUTO_MAX_ODDS=150`
+- These MUST live in the service file, not in code — code changes should never affect them.
+
+**Rule:** any time the bot's scheduled behavior is changed, update the service file env vars, not hardcoded defaults in the code.
 
 ### Output Files
 
