@@ -8,6 +8,7 @@ import argparse
 import csv
 import json
 import logging
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,69 @@ DEFAULT_MIN_BOOKS = 3
 DEFAULT_MAX_ODDS = 250    # filter out odds > +250
 DEFAULT_MIN_ODDS = -200   # filter out odds < -200
 TABLE_TIMEOUT_MS = 30_000
+
+# ---------------------------------------------------------------------------
+# Humanization helpers — varied UAs, viewports, and realistic timing
+# ---------------------------------------------------------------------------
+
+_USER_AGENTS = [
+    # Chrome 131 / 130 on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    # Chrome 131 / 130 on Mac
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    # Edge on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+]
+
+_VIEWPORTS = [
+    {"width": 1920, "height": 1080},
+    {"width": 1536, "height": 864},
+    {"width": 1440, "height": 900},
+    {"width": 1366, "height": 768},
+    {"width": 1280, "height": 800},
+]
+
+
+def _rdelay(page, lo_ms=400, hi_ms=1200):
+    """Wait a random number of milliseconds between lo_ms and hi_ms."""
+    page.wait_for_timeout(random.randint(lo_ms, hi_ms))
+
+
+def _human_type(element, text):
+    """Type text into an input with realistic per-keystroke delays.
+    Clears the field first by triple-clicking to select all."""
+    element.click(click_count=3)
+    element.type(text, delay=random.randint(60, 160))
+
+
+def _hover_then_click(page, locator):
+    """Move the mouse to an element (with slight random offset) then click."""
+    try:
+        box = locator.bounding_box()
+        if box:
+            page.mouse.move(
+                box["x"] + box["width"] / 2 + random.uniform(-4, 4),
+                box["y"] + box["height"] / 2 + random.uniform(-2, 2),
+            )
+            _rdelay(page, 80, 250)
+    except Exception:
+        pass
+    locator.click()
+
+
+def _simulate_reading(page):
+    """Scroll down a few steps then back to top, as if skimming the page."""
+    try:
+        steps = random.randint(2, 4)
+        for _ in range(steps):
+            page.mouse.wheel(0, random.randint(150, 350))
+            _rdelay(page, 250, 700)
+        page.keyboard.press("Home")
+        _rdelay(page, 200, 500)
+    except Exception:
+        pass
 
 
 def parse_args():
@@ -127,12 +191,15 @@ def apply_filters(page, args):
             "select[id*='method' i], select[id*='Method' i]"
         )
         if devig_sel.count() > 0:
+            _hover_then_click(page, devig_sel.first)
             devig_sel.first.select_option(label=args.devig_method)
             log.info("  Devig method → %s", args.devig_method)
         else:
             log.warning("  Devig dropdown not found")
     except Exception as e:
         log.warning("  Could not set devig method: %s", e)
+
+    _rdelay(page, 300, 800)
 
     # --- Min EV% ---
     try:
@@ -141,12 +208,14 @@ def apply_filters(page, args):
             "input[id*='ev' i][type='number'], input[id*='ev' i][type='text']"
         )
         if ev_input.count() > 0:
-            ev_input.first.fill(str(args.min_ev))
+            _human_type(ev_input.first, str(args.min_ev))
             log.info("  Min EV%% → %s", args.min_ev)
         else:
             log.warning("  Min EV input not found")
     except Exception as e:
         log.warning("  Could not set min EV: %s", e)
+
+    _rdelay(page, 250, 700)
 
     # --- Min books ---
     try:
@@ -155,12 +224,14 @@ def apply_filters(page, args):
             "input[id*='book' i][type='number']"
         )
         if books_input.count() > 0:
-            books_input.first.fill(str(args.min_books))
+            _human_type(books_input.first, str(args.min_books))
             log.info("  Min books → %s", args.min_books)
         else:
             log.warning("  Min books input not found")
     except Exception as e:
         log.warning("  Could not set min books: %s", e)
+
+    _rdelay(page, 200, 600)
 
     # --- Mainlines only checkbox ---
     try:
@@ -171,18 +242,18 @@ def apply_filters(page, args):
         if ml_check.count() > 0:
             is_checked = ml_check.first.is_checked()
             if args.mainlines_only and not is_checked:
-                ml_check.first.check()
+                _hover_then_click(page, ml_check.first)
                 log.info("  Mainlines only → checked")
             elif not args.mainlines_only and is_checked:
-                ml_check.first.uncheck()
+                _hover_then_click(page, ml_check.first)
                 log.info("  Mainlines only → unchecked")
         else:
             log.warning("  Mainlines checkbox not found")
     except Exception as e:
         log.warning("  Could not set mainlines: %s", e)
 
-    # Brief pause for filters to take effect
-    page.wait_for_timeout(1000)
+    # Pause for filters to take effect
+    _rdelay(page, 800, 1500)
 
     # Try clicking an "Apply" / "Search" / "Filter" button if one exists
     try:
@@ -193,9 +264,9 @@ def apply_filters(page, args):
             "a:has-text('Apply'), a:has-text('Search')"
         )
         if apply_btn.count() > 0:
-            apply_btn.first.click()
+            _hover_then_click(page, apply_btn.first)
             log.info("  Clicked apply/search button")
-            page.wait_for_timeout(2000)
+            _rdelay(page, 1500, 2500)
     except Exception as e:
         log.warning("  No apply button or click failed: %s", e)
 
@@ -619,15 +690,20 @@ def scrape_ev(
         if chromium_path:
             launch_kwargs["executable_path"] = chromium_path
 
-        log.info("Launching browser (headless=%s) …", headless)
+        ua = random.choice(_USER_AGENTS)
+        viewport = random.choice(_VIEWPORTS)
+        log.info("Launching browser (headless=%s, viewport=%sx%s) …",
+                 headless, viewport["width"], viewport["height"])
         browser = pw.chromium.launch(**launch_kwargs)
         context = browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
+            viewport=viewport,
+            user_agent=ua,
+            locale="en-US",
+            timezone_id="America/New_York",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.google.com/",
+            },
         )
         page = context.new_page()
 
@@ -635,6 +711,9 @@ def scrape_ev(
         api_captured = []
         if intercept_api:
             api_captured = setup_api_intercept(page)
+
+        # Short random pause before navigating (avoids clockwork request timing)
+        _rdelay(page, 500, 2000)
 
         # Navigate
         log.info("Navigating to %s …", URL)
@@ -644,6 +723,9 @@ def scrape_ev(
             log.warning("networkidle timeout — continuing anyway")
 
         log.info("Page loaded: %s", page.title() or "(no title)")
+
+        # Simulate a human skimming the page before touching filters
+        _simulate_reading(page)
 
         # Apply filters
         apply_filters(page, args)

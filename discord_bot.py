@@ -33,6 +33,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import shlex
 import time
@@ -801,6 +802,11 @@ async def _auto_post_loop():
     channel = bot.get_channel(int(channel_id))
     if not channel:
         return
+
+    # Random jitter so runs never land on exact clock boundaries
+    jitter_s = random.uniform(0, 45)
+    log.info("Auto-post: waiting %.0fs jitter before scrape …", jitter_s)
+    await asyncio.sleep(jitter_s)
 
     log.info("Auto-post: running scheduled scrape …")
     try:
