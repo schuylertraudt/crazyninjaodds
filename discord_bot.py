@@ -805,24 +805,32 @@ async def _auto_post_loop():
     log.info("Auto-post: running scheduled scrape …")
     try:
         bets, csv_path = await run_scrape_async()
+
+        if not bets:
+            await channel.send("Scheduled scrape: no +EV bets found.")
+            return
+
+        embeds = format_bet_embeds(bets)
+        for i in range(0, len(embeds), 10):
+            await channel.send(embeds=embeds[i : i + 10])
+
+        if csv_path and csv_path.exists():
+            await channel.send(
+                content="\U0001f4ce Full data attached:",
+                file=discord.File(str(csv_path)),
+            )
     except Exception as e:
-        log.exception("Scheduled scrape failed")
-        await channel.send(f"Scheduled scrape failed: {e}")
-        return
+        log.exception("Scheduled scrape/post failed")
+        try:
+            await channel.send(f"Scheduled scrape failed: {e}")
+        except Exception:
+            log.warning("Could not send error message to channel either")
 
-    if not bets:
-        await channel.send("Scheduled scrape: no +EV bets found.")
-        return
 
-    embeds = format_bet_embeds(bets)
-    for i in range(0, len(embeds), 10):
-        await channel.send(embeds=embeds[i : i + 10])
-
-    if csv_path and csv_path.exists():
-        await channel.send(
-            content="\U0001f4ce Full data attached:",
-            file=discord.File(str(csv_path)),
-        )
+@_auto_post_loop.error
+async def _auto_post_loop_error(error):
+    """Log errors from the auto-post loop without stopping it."""
+    log.exception("Unhandled error in auto-post loop — loop will continue", exc_info=error)
 
 
 # ---------------------------------------------------------------------------
