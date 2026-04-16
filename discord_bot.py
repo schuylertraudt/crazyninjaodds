@@ -77,6 +77,7 @@ KELLY_FRACTION = 0.15   # fractional Kelly multiplier (15%)
 AUTO_MIN_EV = float(os.environ.get("CNO_AUTO_MIN_EV", str(DEFAULT_MIN_EV)))
 AUTO_MIN_ODDS = int(os.environ.get("CNO_AUTO_MIN_ODDS", str(DEFAULT_MIN_ODDS)))
 AUTO_MAX_ODDS = int(os.environ.get("CNO_AUTO_MAX_ODDS", str(DEFAULT_MAX_ODDS)))
+AUTO_MIN_BOOKS = int(os.environ.get("CNO_AUTO_MIN_BOOKS", str(DEFAULT_MIN_BOOKS)))
 OUTPUT_DIR = Path("./csv_output")
 
 intents = discord.Intents.default()
@@ -112,6 +113,8 @@ BOOK_BADGE = {
     "betmgm": "MGM",
     "caesars": "CZR",
     "betrivers": "BR",
+    "bet365": "B365",
+    "thescore bet": "SCR",
     "fanatics": "FAN",
     "hard rock": "HR",
 }
@@ -871,14 +874,15 @@ async def _auto_post_loop():
     await asyncio.sleep(jitter_s)
 
     log.info(
-        "Auto-post: running scheduled scrape (min_ev=%.1f, odds=%d..+%d) …",
-        AUTO_MIN_EV, AUTO_MIN_ODDS, AUTO_MAX_ODDS,
+        "Auto-post: running scheduled scrape (min_ev=%.1f, odds=%d..+%d, min_books=%d) …",
+        AUTO_MIN_EV, AUTO_MIN_ODDS, AUTO_MAX_ODDS, AUTO_MIN_BOOKS,
     )
     try:
         bets, csv_path = await run_scrape_async(
             min_ev=AUTO_MIN_EV,
             min_odds=AUTO_MIN_ODDS,
             max_odds=AUTO_MAX_ODDS,
+            min_books=AUTO_MIN_BOOKS,
         )
 
         # Deduplicate — skip bets already posted this session

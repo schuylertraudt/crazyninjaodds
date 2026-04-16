@@ -147,9 +147,10 @@ Change `KELLY_BANKROLL` or `KELLY_FRACTION` at the top of `discord_bot.py` only.
 ### Mode 2: Scheduled auto-post
 - Fires every `CNO_SCHEDULE_MINUTES` minutes (default: 5)
 - Uses **tight filters** from env vars in the systemd service file:
-  - `CNO_AUTO_MIN_EV=6` (min 6% EV)
+  - `CNO_AUTO_MIN_EV=7` (min 7% EV)
   - `CNO_AUTO_MIN_ODDS=-150` (no heavy favorites)
   - `CNO_AUTO_MAX_ODDS=150` (no longshots)
+  - `CNO_AUTO_MIN_BOOKS=4` (minimum 4 books with the line)
 - **Deduplication active**: `_posted_bets` set tracks `(sportsbook, event, bet_name, market)`
   tuples already sent this session. A bet posted in run N will not appear in run N+1, N+2, etc.
   The set clears on bot restart.
@@ -208,9 +209,10 @@ All deployment-specific config lives in `/etc/systemd/system/cno-bot.service`.
 | `GEMINI_API_KEY` | — | (secret) | Gemini AI API key for `!ask` |
 | `CNO_CHANNEL_ID` | `""` | `1490030828527554622` | Channel to auto-post to; also triggers auto-arm on startup |
 | `CNO_SCHEDULE_MINUTES` | `5` | `5` | Auto-post interval in minutes |
-| `CNO_AUTO_MIN_EV` | `1.0` (DEFAULT_MIN_EV) | `6.0` | Min EV% for scheduled scrapes |
+| `CNO_AUTO_MIN_EV` | `1.0` (DEFAULT_MIN_EV) | `7.0` | Min EV% for scheduled scrapes |
 | `CNO_AUTO_MIN_ODDS` | `-200` (DEFAULT_MIN_ODDS) | `-150` | Min odds for scheduled scrapes |
 | `CNO_AUTO_MAX_ODDS` | `250` (DEFAULT_MAX_ODDS) | `150` | Max odds for scheduled scrapes |
+| `CNO_AUTO_MIN_BOOKS` | `3` (DEFAULT_MIN_BOOKS) | `4` | Min books with the line for scheduled scrapes |
 
 When adding new tunable behavior, add it here as an env var with a sensible code
 default, and record the current service value in this table.
@@ -269,7 +271,7 @@ python discord_bot.py
 Edit the service file on the server, not the code:
 ```bash
 sudo nano /etc/systemd/system/cno-bot.service
-# Edit CNO_AUTO_MIN_EV, CNO_AUTO_MIN_ODDS, CNO_AUTO_MAX_ODDS
+# Edit CNO_AUTO_MIN_EV, CNO_AUTO_MIN_ODDS, CNO_AUTO_MAX_ODDS, CNO_AUTO_MIN_BOOKS
 sudo systemctl daemon-reload && sudo systemctl restart cno-bot
 ```
 Then update the "Current service value" column in the env vars table above.
