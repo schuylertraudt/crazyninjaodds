@@ -71,7 +71,7 @@ AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
 OUTPUT_DIR = Path("./csv_output")
 
 # Tighter filters used by the auto-scraper scheduler (independent of !ev defaults)
-AUTO_MIN_EV = 7.0
+AUTO_MIN_EV = 2.0
 AUTO_MIN_BOOKS = 4
 
 intents = discord.Intents.default()
