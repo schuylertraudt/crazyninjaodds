@@ -30,6 +30,8 @@ DEFAULT_SPORTSBOOKS = [
     "Caesars",
     "BetRivers",
     "Fanatics",
+    "Bet365",
+    "theScore Bet",
 ]
 DEFAULT_MIN_EV = 1.0
 DEFAULT_MAINLINES_ONLY = True

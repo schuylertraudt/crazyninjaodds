@@ -70,6 +70,10 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
 OUTPUT_DIR = Path("./csv_output")
 
+# Tighter filters used by the auto-scraper scheduler (independent of !ev defaults)
+AUTO_MIN_EV = 7.0
+AUTO_MIN_BOOKS = 4
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -101,6 +105,9 @@ BOOK_BADGE = {
     "betrivers": "BR",
     "fanatics": "FAN",
     "hard rock": "HR",
+    "bet365": "B365",
+    "thescore bet": "TSB",
+    "thescorebet": "TSB",
 }
 
 
@@ -804,7 +811,10 @@ async def _auto_post_loop():
 
     log.info("Auto-post: running scheduled scrape …")
     try:
-        bets, csv_path = await run_scrape_async()
+        bets, csv_path = await run_scrape_async(
+            min_ev=AUTO_MIN_EV,
+            min_books=AUTO_MIN_BOOKS,
+        )
     except Exception as e:
         log.exception("Scheduled scrape failed")
         await channel.send(f"Scheduled scrape failed: {e}")
@@ -846,7 +856,7 @@ SYSTEM_PROMPT = (
     "IMPORTANT: When a user asks to build, make, create, or suggest a parlay — "
     "USE the build_parlay tool. Extract the number of legs, sport, sportsbook, "
     "and whether they want a same-game parlay from their message. "
-    "Available sportsbooks: FanDuel, DraftKings, BetMGM, Caesars, BetRivers, Fanatics, Hard Rock."
+    "Available sportsbooks: FanDuel, DraftKings, BetMGM, Caesars, BetRivers, Fanatics, Hard Rock, Bet365, theScore Bet."
 )
 
 # Gemini function declaration for the scraper tool
@@ -865,7 +875,7 @@ _SCRAPE_TOOL_DECLARATION = {
                 "items": {"type": "string"},
                 "description": (
                     "Sportsbooks to filter for. Valid values: FanDuel, DraftKings, "
-                    "BetMGM, Caesars, BetRivers, Fanatics, Hard Rock. "
+                    "BetMGM, Caesars, BetRivers, Fanatics, Hard Rock, Bet365, theScore Bet. "
                     "Omit or pass empty array for all default sportsbooks."
                 ),
             },
@@ -1161,6 +1171,8 @@ _BOOK_ALIASES = {
     "betrivers": "BetRivers", "br": "BetRivers", "bet rivers": "BetRivers",
     "fanatics": "Fanatics", "fan": "Fanatics",
     "hard rock": "Hard Rock", "hardrock": "Hard Rock", "hr": "Hard Rock",
+    "bet365": "Bet365", "365": "Bet365",
+    "thescore bet": "theScore Bet", "thescorebet": "theScore Bet", "tsb": "theScore Bet", "the score bet": "theScore Bet",
 }
 
 

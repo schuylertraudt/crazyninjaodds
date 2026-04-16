@@ -35,6 +35,8 @@ DEFAULT_SPORTSBOOKS = [
     "BetRivers",
     "Fanatics",
     "Hard Rock",
+    "Bet365",
+    "theScore Bet",
 ]
 DEFAULT_MIN_EV = 1.0
 DEFAULT_MAX_ODDS = 250
