@@ -6,8 +6,9 @@ These rules exist because features have been broken by changes that didn't accou
 existing behavior. Before touching any code, read the relevant section below.
 
 **Never change these without explicit user instruction:**
-- `KELLY_BANKROLL`, `KELLY_FRACTION` in `discord_bot.py` — user-set constants
-- `_kelly_dollars()` calculation method — must use `odds` + `fair_odds`, NOT the CNO kelly column
+- `KELLY_BANKROLL`, `KELLY_FRACTION`, `BIG_KELLY_BANKROLL`, `BIG_KELLY_FRACTION` — all env-var driven, defaults in code
+- `_kelly_dollars()` calculation method — must use `odds` + `fair_odds`, NOT the CNO kelly column; picks bankroll/fraction based on whether sportsbook is in `BIG_BOOKS`
+- `BIG_BOOKS` set and `_apply_auto_filters()` — big book splitting logic in the auto-post loop
 - The embed field order and format (documented below)
 - The `!ev` command defaults (min EV 1%, odds -200 to +250) — these are intentionally loose
 - The scheduled auto-post filters — these live in the systemd service file as env vars, NOT in code
@@ -120,19 +121,21 @@ Calculated by `_kelly_dollars(bet)` in `discord_bot.py` using **`odds` and `fair
 directly** — does NOT use the CNO `kelly` column (it's unreliable/variably formatted).
 
 ```
-fair_prob = implied probability from fair_odds (American)
-b         = profit-per-unit from book odds (American)
+fair_prob  = implied probability from fair_odds (American)
+b          = profit-per-unit from book odds (American)
 kelly_frac = (b × fair_prob − (1 − fair_prob)) / b
-kelly_$   = kelly_frac × KELLY_BANKROLL × KELLY_FRACTION
+kelly_$    = kelly_frac × bankroll × fraction
 ```
 
-Constants (top of `discord_bot.py`):
-```python
-KELLY_BANKROLL = 1000   # assumed bankroll in dollars
-KELLY_FRACTION = 0.15   # 15% fractional Kelly
-```
+The function picks `bankroll` and `fraction` based on whether the bet's sportsbook is
+in `BIG_BOOKS`. All four values are env-var driven (service file), defaulting to 0.25:
 
-Change `KELLY_BANKROLL` or `KELLY_FRACTION` at the top of `discord_bot.py` only.
+| Env var | Default | Description |
+|---|---|---|
+| `CNO_KELLY_BANKROLL` | `1000` | Assumed bankroll for regular books |
+| `CNO_KELLY_FRACTION` | `0.25` | Fractional Kelly for regular books |
+| `CNO_BIG_KELLY_BANKROLL` | `1000` | Assumed bankroll for big books |
+| `CNO_BIG_KELLY_FRACTION` | `0.25` | Fractional Kelly for big books |
 
 ---
 
@@ -146,11 +149,14 @@ Change `KELLY_BANKROLL` or `KELLY_FRACTION` at the top of `discord_bot.py` only.
 
 ### Mode 2: Scheduled auto-post
 - Fires every `CNO_SCHEDULE_MINUTES` minutes (default: 5)
-- Uses **tight filters** from env vars in the systemd service file:
-  - `CNO_AUTO_MIN_EV=7` (min 7% EV)
-  - `CNO_AUTO_MIN_ODDS=-150` (no heavy favorites)
-  - `CNO_AUTO_MAX_ODDS=150` (no longshots)
-  - `CNO_AUTO_MIN_BOOKS=4` (minimum 4 books with the line)
+- One scrape per run using the most permissive filters across both categories, then
+  split and filtered in code by `_apply_auto_filters()`
+- **Big books** (FanDuel, DraftKings by default — set via `CNO_BIG_BOOKS`):
+  - Tighter thresholds: `CNO_BIG_MIN_EV=8`, same odds/books as regular by default
+  - Posted first with an `@role` mention if `CNO_BIG_ROLE_ID` is set
+- **Regular books** (everything not in BIG_BOOKS):
+  - `CNO_AUTO_MIN_EV=7`, `CNO_AUTO_MIN_ODDS=-150`, `CNO_AUTO_MAX_ODDS=150`, `CNO_AUTO_MIN_BOOKS=4`
+  - Posted after big books, no role mention
 - **Deduplication active**: `_posted_bets` set tracks `(sportsbook, event, bet_name, market)`
   tuples already sent this session. A bet posted in run N will not appear in run N+1, N+2, etc.
   The set clears on bot restart.
@@ -209,10 +215,23 @@ All deployment-specific config lives in `/etc/systemd/system/cno-bot.service`.
 | `GEMINI_API_KEY` | — | (secret) | Gemini AI API key for `!ask` |
 | `CNO_CHANNEL_ID` | `""` | `1490030828527554622` | Channel to auto-post to; also triggers auto-arm on startup |
 | `CNO_SCHEDULE_MINUTES` | `5` | `5` | Auto-post interval in minutes |
-| `CNO_AUTO_MIN_EV` | `1.0` (DEFAULT_MIN_EV) | `7.0` | Min EV% for scheduled scrapes |
-| `CNO_AUTO_MIN_ODDS` | `-200` (DEFAULT_MIN_ODDS) | `-150` | Min odds for scheduled scrapes |
-| `CNO_AUTO_MAX_ODDS` | `250` (DEFAULT_MAX_ODDS) | `150` | Max odds for scheduled scrapes |
-| `CNO_AUTO_MIN_BOOKS` | `3` (DEFAULT_MIN_BOOKS) | `4` | Min books with the line for scheduled scrapes |
+| **Regular book filters** | | | |
+| `CNO_AUTO_MIN_EV` | `1.0` | `7.0` | Min EV% for regular book scheduled scrapes |
+| `CNO_AUTO_MIN_ODDS` | `-200` | `-150` | Min odds for regular book scheduled scrapes |
+| `CNO_AUTO_MAX_ODDS` | `250` | `150` | Max odds for regular book scheduled scrapes |
+| `CNO_AUTO_MIN_BOOKS` | `3` | `4` | Min books with the line for regular book scrapes |
+| **Big book filters** | | | |
+| `CNO_BIG_BOOKS` | `FanDuel,DraftKings` | `FanDuel,DraftKings` | Comma-separated list of big books (case-insensitive) |
+| `CNO_BIG_MIN_EV` | `8.0` | `8.0` | Min EV% for big book scheduled scrapes |
+| `CNO_BIG_MIN_ODDS` | `-200` | `-150` | Min odds for big book scheduled scrapes |
+| `CNO_BIG_MAX_ODDS` | `250` | `150` | Max odds for big book scheduled scrapes |
+| `CNO_BIG_MIN_BOOKS` | `3` | `4` | Min books with the line for big book scrapes |
+| `CNO_BIG_ROLE_ID` | `""` | (your role ID) | Discord role ID to @mention on big book posts |
+| **Kelly settings** | | | |
+| `CNO_KELLY_BANKROLL` | `1000` | `1000` | Assumed bankroll for regular book Kelly calc |
+| `CNO_KELLY_FRACTION` | `0.25` | `0.25` | Fractional Kelly multiplier for regular books |
+| `CNO_BIG_KELLY_BANKROLL` | `1000` | `1000` | Assumed bankroll for big book Kelly calc |
+| `CNO_BIG_KELLY_FRACTION` | `0.25` | `0.25` | Fractional Kelly multiplier for big books |
 
 When adding new tunable behavior, add it here as an env var with a sensible code
 default, and record the current service value in this table.

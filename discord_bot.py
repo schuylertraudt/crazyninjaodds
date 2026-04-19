@@ -70,10 +70,26 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
 AUTO_SCHEDULE_MINUTES = int(os.environ.get("CNO_SCHEDULE_MINUTES", "5"))
-# Kelly Criterion display settings — bankroll and fractional multiplier
-KELLY_BANKROLL = 1000   # assumed bankroll in dollars
-KELLY_FRACTION = 0.15   # fractional Kelly multiplier (15%)
-# Scheduled-scrape filters — override defaults via env vars in the service file
+
+# Kelly Criterion — configurable per category; defaults to 25% fractional Kelly
+KELLY_BANKROLL = int(os.environ.get("CNO_KELLY_BANKROLL", "1000"))
+KELLY_FRACTION = float(os.environ.get("CNO_KELLY_FRACTION", "0.25"))
+BIG_KELLY_BANKROLL = int(os.environ.get("CNO_BIG_KELLY_BANKROLL", "1000"))
+BIG_KELLY_FRACTION = float(os.environ.get("CNO_BIG_KELLY_FRACTION", "0.25"))
+
+# Big books — FanDuel and DraftKings get separate (higher) thresholds and a role ping
+BIG_BOOKS = {
+    b.strip().lower()
+    for b in os.environ.get("CNO_BIG_BOOKS", "FanDuel,DraftKings").split(",")
+    if b.strip()
+}
+BIG_MIN_EV = float(os.environ.get("CNO_BIG_MIN_EV", "8.0"))
+BIG_MIN_ODDS = int(os.environ.get("CNO_BIG_MIN_ODDS", str(DEFAULT_MIN_ODDS)))
+BIG_MAX_ODDS = int(os.environ.get("CNO_BIG_MAX_ODDS", str(DEFAULT_MAX_ODDS)))
+BIG_MIN_BOOKS = int(os.environ.get("CNO_BIG_MIN_BOOKS", str(DEFAULT_MIN_BOOKS)))
+BIG_ROLE_ID = os.environ.get("CNO_BIG_ROLE_ID", "")
+
+# Scheduled-scrape filters for all other books — override via env vars in the service file
 AUTO_MIN_EV = float(os.environ.get("CNO_AUTO_MIN_EV", str(DEFAULT_MIN_EV)))
 AUTO_MIN_ODDS = int(os.environ.get("CNO_AUTO_MIN_ODDS", str(DEFAULT_MIN_ODDS)))
 AUTO_MAX_ODDS = int(os.environ.get("CNO_AUTO_MAX_ODDS", str(DEFAULT_MAX_ODDS)))
@@ -156,7 +172,10 @@ def _kelly_dollars(bet):
         kelly_frac = (b * fair_prob - (1 - fair_prob)) / b
         if kelly_frac <= 0:
             return ""
-        dollars = kelly_frac * KELLY_BANKROLL * KELLY_FRACTION
+        is_big = bet.get("sportsbook", "").strip().lower() in BIG_BOOKS
+        bankroll = BIG_KELLY_BANKROLL if is_big else KELLY_BANKROLL
+        fraction = BIG_KELLY_FRACTION if is_big else KELLY_FRACTION
+        dollars = kelly_frac * bankroll * fraction
         return f"${dollars:.2f}"
     except (ValueError, TypeError, ZeroDivisionError):
         return ""
@@ -859,6 +878,31 @@ async def evschedule_command(ctx, interval: str = ""):
     await ctx.send(f"Auto-posting every {minutes} minutes in this channel.")
 
 
+def _apply_auto_filters(bets, min_ev, min_odds, max_odds, min_books):
+    """In-code filter for per-category thresholds after scraping."""
+    result = []
+    for b in bets:
+        try:
+            ev = float(b.get("ev_pct", "0").replace("%", "").replace("+", "").strip())
+        except (ValueError, TypeError):
+            ev = 0.0
+        try:
+            odds = int(b.get("odds", "0").replace("+", "").strip())
+        except (ValueError, TypeError):
+            continue
+        if ev < min_ev or not (min_odds <= odds <= max_odds):
+            continue
+        books_val = b.get("books", "").strip()
+        if books_val:
+            try:
+                if int(books_val) < min_books:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        result.append(b)
+    return result
+
+
 @tasks.loop(minutes=15)
 async def _auto_post_loop():
     channel_id = getattr(_auto_post_loop, "_channel_id", None)
@@ -873,19 +917,29 @@ async def _auto_post_loop():
     log.info("Auto-post: waiting %.0fs jitter before scrape …", jitter_s)
     await asyncio.sleep(jitter_s)
 
+    # Scrape with the most permissive settings across both categories so nothing is missed
+    scrape_min_ev = min(AUTO_MIN_EV, BIG_MIN_EV)
+    scrape_min_odds = min(AUTO_MIN_ODDS, BIG_MIN_ODDS)
+    scrape_max_odds = max(AUTO_MAX_ODDS, BIG_MAX_ODDS)
+    scrape_min_books = min(AUTO_MIN_BOOKS, BIG_MIN_BOOKS)
     log.info(
-        "Auto-post: running scheduled scrape (min_ev=%.1f, odds=%d..+%d, min_books=%d) …",
-        AUTO_MIN_EV, AUTO_MIN_ODDS, AUTO_MAX_ODDS, AUTO_MIN_BOOKS,
+        "Auto-post: scraping (floor: ev≥%.1f, odds %d..+%d, books≥%d) …",
+        scrape_min_ev, scrape_min_odds, scrape_max_odds, scrape_min_books,
     )
     try:
         bets, csv_path = await run_scrape_async(
-            min_ev=AUTO_MIN_EV,
-            min_odds=AUTO_MIN_ODDS,
-            max_odds=AUTO_MAX_ODDS,
-            min_books=AUTO_MIN_BOOKS,
+            min_ev=scrape_min_ev,
+            min_odds=scrape_min_odds,
+            max_odds=scrape_max_odds,
+            min_books=scrape_min_books,
         )
 
-        # Deduplicate — skip bets already posted this session
+        # Split into big books vs regular books, then apply per-category filters
+        big_raw = [b for b in bets if b.get("sportsbook", "").strip().lower() in BIG_BOOKS]
+        other_raw = [b for b in bets if b.get("sportsbook", "").strip().lower() not in BIG_BOOKS]
+        big_bets = _apply_auto_filters(big_raw, BIG_MIN_EV, BIG_MIN_ODDS, BIG_MAX_ODDS, BIG_MIN_BOOKS)
+        other_bets = _apply_auto_filters(other_raw, AUTO_MIN_EV, AUTO_MIN_ODDS, AUTO_MAX_ODDS, AUTO_MIN_BOOKS)
+
         def _bet_key(b):
             return (
                 b.get("sportsbook", "").strip().lower(),
@@ -894,22 +948,36 @@ async def _auto_post_loop():
                 b.get("market", "").strip().lower(),
             )
 
-        new_bets = [b for b in bets if _bet_key(b) not in _posted_bets]
-        skipped = len(bets) - len(new_bets)
+        # Deduplicate both groups
+        new_big = [b for b in big_bets if _bet_key(b) not in _posted_bets]
+        new_other = [b for b in other_bets if _bet_key(b) not in _posted_bets]
+        skipped = (len(big_bets) - len(new_big)) + (len(other_bets) - len(new_other))
         if skipped:
-            log.info("Dedup: skipping %d already-posted bets, %d new", skipped, len(new_bets))
+            log.info("Dedup: skipping %d already-posted bets", skipped)
 
-        if not new_bets:
-            log.info("Scheduled scrape: all %d bets already posted, nothing new.", len(bets))
+        if not new_big and not new_other:
+            log.info("Scheduled scrape: no new bets to post.")
             return
 
-        # Mark new bets as posted before sending (so a send failure doesn't re-post)
-        for b in new_bets:
+        # Mark as posted before sending
+        for b in new_big + new_other:
             _posted_bets.add(_bet_key(b))
 
-        embeds = format_bet_embeds(new_bets)
-        for i in range(0, len(embeds), 10):
-            await channel.send(embeds=embeds[i : i + 10])
+        # Big book bets — post first with optional role ping
+        if new_big:
+            log.info("Posting %d big book bets (FD/DK)", len(new_big))
+            role_prefix = f"<@&{BIG_ROLE_ID}> " if BIG_ROLE_ID else ""
+            big_embeds = format_bet_embeds(new_big)
+            for i in range(0, len(big_embeds), 10):
+                content = f"{role_prefix}\U0001f3c6 Big book alert!" if i == 0 and role_prefix else None
+                await channel.send(content=content, embeds=big_embeds[i : i + 10])
+
+        # Regular bets
+        if new_other:
+            log.info("Posting %d regular bets", len(new_other))
+            other_embeds = format_bet_embeds(new_other)
+            for i in range(0, len(other_embeds), 10):
+                await channel.send(embeds=other_embeds[i : i + 10])
 
         if csv_path and csv_path.exists():
             await channel.send(
