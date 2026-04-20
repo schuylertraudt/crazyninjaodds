@@ -414,7 +414,7 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
         return [embed]
 
     sorted_bets = sorted(bets, key=_ev_sort_key, reverse=True)
-    now = datetime.now().strftime("%b %d, %I:%M %p")
+    now = datetime.now(ZoneInfo("America/New_York")).strftime("%b %d, %I:%M %p ET")
 
     # --- Summary embed ---
     summary = discord.Embed(
