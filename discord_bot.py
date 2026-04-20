@@ -38,6 +38,7 @@ import re
 import shlex
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from itertools import combinations
 from pathlib import Path
 
@@ -910,6 +911,12 @@ async def _auto_post_loop():
         return
     channel = bot.get_channel(int(channel_id))
     if not channel:
+        return
+
+    # Overnight pause — no scraping midnight to 6 AM ET
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    if now_et.hour < 6:
+        log.info("Auto-post: overnight pause (%s ET) — skipping.", now_et.strftime("%H:%M"))
         return
 
     # Random jitter so runs never land on exact clock boundaries

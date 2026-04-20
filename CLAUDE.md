@@ -203,6 +203,10 @@ Each browser session also randomizes:
 The auto-post loop also adds 0–45s of random jitter before each scrape so runs never
 fire at exact clock boundaries.
 
+The loop silently skips any run between **midnight and 6 AM ET** (checked via
+`America/New_York` timezone). The loop itself keeps ticking — it just does nothing
+during those hours and resumes automatically at 6 AM.
+
 ---
 
 ## Environment Variables (full list)
