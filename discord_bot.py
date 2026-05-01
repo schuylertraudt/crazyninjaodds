@@ -982,12 +982,12 @@ async def _auto_post_loop():
         await _send_results(channel, ping_role=True)
 
         if MIRROR_CHANNEL_ID:
-            mirror = bot.get_channel(int(MIRROR_CHANNEL_ID))
-            if mirror:
+            try:
+                mirror = bot.get_channel(int(MIRROR_CHANNEL_ID)) or await bot.fetch_channel(int(MIRROR_CHANNEL_ID))
                 log.info("Mirroring to channel %s", MIRROR_CHANNEL_ID)
                 await _send_results(mirror, ping_role=False)
-            else:
-                log.warning("Mirror channel %s not found — is the bot in that server?", MIRROR_CHANNEL_ID)
+            except Exception as mirror_err:
+                log.warning("Mirror channel %s not found or not accessible: %s", MIRROR_CHANNEL_ID, mirror_err)
     except Exception as e:
         log.exception("Scheduled scrape/post failed")
         try:
