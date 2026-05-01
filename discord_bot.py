@@ -70,6 +70,7 @@ log = logging.getLogger("cno-bot")
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
+MIRROR_CHANNEL_ID = os.environ.get("CNO_MIRROR_CHANNEL_ID", "")
 AUTO_SCHEDULE_MINUTES = int(os.environ.get("CNO_SCHEDULE_MINUTES", "5"))
 
 # Kelly Criterion — configurable per category; defaults to 25% fractional Kelly
@@ -970,27 +971,35 @@ async def _auto_post_loop():
         for b in new_big + new_other:
             _posted_bets.add(_bet_key(b))
 
-        # Big book bets — post first with optional role ping
-        if new_big:
-            log.info("Posting %d big book bets (FD/DK)", len(new_big))
-            role_prefix = f"<@&{BIG_ROLE_ID}> " if BIG_ROLE_ID else ""
-            big_embeds = format_bet_embeds(new_big)
-            for i in range(0, len(big_embeds), 10):
-                content = f"{role_prefix}\U0001f3c6 Big book alert!" if i == 0 and role_prefix else None
-                await channel.send(content=content, embeds=big_embeds[i : i + 10])
+        # Build embeds once, reuse for all channels
+        big_embeds = format_bet_embeds(new_big) if new_big else []
+        other_embeds = format_bet_embeds(new_other) if new_other else []
 
-        # Regular bets
-        if new_other:
-            log.info("Posting %d regular bets", len(new_other))
-            other_embeds = format_bet_embeds(new_other)
-            for i in range(0, len(other_embeds), 10):
-                await channel.send(embeds=other_embeds[i : i + 10])
+        async def _send_results(dest, ping_role=False):
+            if big_embeds:
+                role_prefix = f"<@&{BIG_ROLE_ID}> " if (ping_role and BIG_ROLE_ID) else ""
+                for i in range(0, len(big_embeds), 10):
+                    content = f"{role_prefix}\U0001f3c6 Big book alert!" if i == 0 and role_prefix else None
+                    await dest.send(content=content, embeds=big_embeds[i : i + 10])
+            if other_embeds:
+                for i in range(0, len(other_embeds), 10):
+                    await dest.send(embeds=other_embeds[i : i + 10])
+            if csv_path and csv_path.exists():
+                await dest.send(
+                    content="\U0001f4ce Full data attached:",
+                    file=discord.File(str(csv_path)),
+                )
 
-        if csv_path and csv_path.exists():
-            await channel.send(
-                content="\U0001f4ce Full data attached:",
-                file=discord.File(str(csv_path)),
-            )
+        log.info("Posting %d big + %d regular bets", len(new_big), len(new_other))
+        await _send_results(channel, ping_role=True)
+
+        if MIRROR_CHANNEL_ID:
+            mirror = bot.get_channel(int(MIRROR_CHANNEL_ID))
+            if mirror:
+                log.info("Mirroring to channel %s", MIRROR_CHANNEL_ID)
+                await _send_results(mirror, ping_role=False)
+            else:
+                log.warning("Mirror channel %s not found — is the bot in that server?", MIRROR_CHANNEL_ID)
     except Exception as e:
         log.exception("Scheduled scrape/post failed")
         try:

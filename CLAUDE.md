@@ -217,7 +217,8 @@ All deployment-specific config lives in `/etc/systemd/system/cno-bot.service`.
 |---|---|---|---|
 | `DISCORD_TOKEN` | — | (secret) | Discord bot token |
 | `GEMINI_API_KEY` | — | (secret) | Gemini AI API key for `!ask` |
-| `CNO_CHANNEL_ID` | `""` | `1490030828527554622` | Channel to auto-post to; also triggers auto-arm on startup |
+| `CNO_CHANNEL_ID` | `""` | `1490030828527554622` | Primary channel to auto-post to; also triggers auto-arm on startup |
+| `CNO_MIRROR_CHANNEL_ID` | `""` | (second channel ID) | Optional second channel to mirror posts to (no role ping; bot must be in that server) |
 | `CNO_SCHEDULE_MINUTES` | `5` | `5` | Auto-post interval in minutes |
 | **Regular book filters** | | | |
 | `CNO_AUTO_MIN_EV` | `1.0` | `7.0` | Min EV% for regular book scheduled scrapes |
