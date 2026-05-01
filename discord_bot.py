@@ -507,7 +507,7 @@ def format_bet_embeds(bets, max_per_embed=10, max_embeds=4):
     # Overflow note
     if len(bets) > total_shown:
         embeds[-1].set_footer(
-            text=f"Showing top {total_shown} of {len(bets)} bets \u2022 Full list in CSV"
+            text=f"Showing top {total_shown} of {len(bets)} bets"
         )
     else:
         embeds[-1].set_footer(text="CrazyNinjaOdds +EV Scraper")
@@ -711,13 +711,6 @@ async def ev_command(ctx, *, raw_args: str = ""):
     # Discord allows max 10 embeds per message — send in batches
     for i in range(0, len(embeds), 10):
         await ctx.send(embeds=embeds[i : i + 10])
-
-    # Attach CSV
-    if csv_path and csv_path.exists():
-        await ctx.send(
-            content="\U0001f4ce Full data attached:",
-            file=discord.File(str(csv_path)),
-        )
 
 
 @bot.command(name="parlay")
@@ -984,11 +977,6 @@ async def _auto_post_loop():
             if other_embeds:
                 for i in range(0, len(other_embeds), 10):
                     await dest.send(embeds=other_embeds[i : i + 10])
-            if csv_path and csv_path.exists():
-                await dest.send(
-                    content="\U0001f4ce Full data attached:",
-                    file=discord.File(str(csv_path)),
-                )
 
         log.info("Posting %d big + %d regular bets", len(new_big), len(new_other))
         await _send_results(channel, ping_role=True)
@@ -1432,11 +1420,6 @@ async def _handle_ai_response(channel, channel_id, user_name, question):
         for i in range(0, len(embeds), 10):
             await channel.send(embeds=embeds[i : i + 10])
 
-        if csv_path and csv_path.exists():
-            await channel.send(
-                content="\U0001f4ce Full data attached:",
-                file=discord.File(str(csv_path)),
-            )
 
 
 @bot.command(name="ask")
