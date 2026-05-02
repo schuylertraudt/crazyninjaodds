@@ -1184,11 +1184,11 @@ async def _handle_parlay_function_call(func_call):
     args = dict(func_call.args) if func_call.args else {}
     log.info("AI triggered parlay build with args: %s", args)
 
-    num_legs = args.get("num_legs", 3)
+    num_legs = int(args.get("num_legs", 3))
     sport = args.get("sport")
     sportsbook = args.get("sportsbook")
     same_game = args.get("same_game", False)
-    max_parlays = min(args.get("max_parlays", 3), 5)
+    max_parlays = min(int(args.get("max_parlays", 3)), 5)
 
     try:
         bets, csv_path = await run_scrape_async()
