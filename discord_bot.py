@@ -1163,7 +1163,7 @@ async def _handle_scrape_function_call(func_call):
 
     sportsbooks = args.get("sportsbooks", []) or None
     min_ev = args.get("min_ev", DEFAULT_MIN_EV)
-    max_odds = args.get("max_odds", DEFAULT_MAX_ODDS)
+    max_odds = args.get("max_odds", 400)   # wider than scheduled posts — include high-odds props
     min_odds = args.get("min_odds", DEFAULT_MIN_ODDS)
 
     try:
@@ -1172,6 +1172,7 @@ async def _handle_scrape_function_call(func_call):
             min_ev=min_ev,
             max_odds=max_odds,
             min_odds=min_odds,
+            mainlines_only=False,   # AI queries should show props too
         )
         return bets, csv_path, _format_bets_for_ai(bets), []
     except Exception as e:
@@ -1191,7 +1192,7 @@ async def _handle_parlay_function_call(func_call):
     max_parlays = min(int(args.get("max_parlays", 3)), 5)
 
     try:
-        bets, csv_path = await run_scrape_async()
+        bets, csv_path = await run_scrape_async(mainlines_only=False, max_odds=400)
     except Exception as e:
         log.exception("Scrape for parlay failed")
         return [], f"Scrape failed: {e}", []
