@@ -45,6 +45,19 @@ from pathlib import Path
 import discord
 from discord.ext import commands, tasks
 
+import sqlite3
+
+from bet_tracker import (
+    init_db,
+    save_bet,
+    get_pending_bets,
+    settle_bet,
+    run_settlement_pass,
+    get_record_stats,
+    calc_profit_for_result,
+)
+import bet_tracker as _bt
+
 from scrape_ev import (
     DEFAULT_DEVIG,
     DEFAULT_MAX_ODDS,
@@ -70,6 +83,10 @@ log = logging.getLogger("cno-bot")
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 AUTO_CHANNEL_ID = os.environ.get("CNO_CHANNEL_ID", "")
+TRACKER_DB_PATH = os.environ.get("CNO_TRACKER_DB", "./bet_tracker.db")
+ESPN_TIMEOUT_S = int(os.environ.get("CNO_ESPN_TIMEOUT_S", "10"))
+SETTLE_ON_TIMER = os.environ.get("CNO_SETTLE_ON_TIMER", "1") == "1"
+_bt.ESPN_TIMEOUT_S = ESPN_TIMEOUT_S
 MIRROR_CHANNEL_ID = os.environ.get("CNO_MIRROR_CHANNEL_ID", "")
 AUTO_SCHEDULE_MINUTES = int(os.environ.get("CNO_SCHEDULE_MINUTES", "5"))
 
@@ -109,6 +126,9 @@ _schedule_interval = None
 # Deduplication: bets already posted by the auto-loop this session
 # Key: (sportsbook, event, bet_name, market) — cleared on restart
 _posted_bets: set = set()
+
+# Bet tracker DB connection — initialized in on_ready
+_db_conn = None
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +615,19 @@ async def run_scrape_async(
 
 @bot.event
 async def on_ready():
+    global _db_conn
     log.info("Bot ready: %s (id=%s)", bot.user, bot.user.id)
+
+    # Initialize bet tracker DB
+    try:
+        _db_conn = sqlite3.connect(TRACKER_DB_PATH, check_same_thread=False)
+        _db_conn.row_factory = sqlite3.Row
+        init_db(_db_conn)
+        log.info("Bet tracker DB initialized at %s", TRACKER_DB_PATH)
+    except Exception as e:
+        log.error("Failed to initialize bet tracker DB: %s", e)
+        _db_conn = None
+
     if AUTO_CHANNEL_ID and AUTO_SCHEDULE_MINUTES > 0:
         log.info(
             "Auto-starting schedule: every %d min → channel %s",
@@ -964,6 +996,18 @@ async def _auto_post_loop():
         for b in new_big + new_other:
             _posted_bets.add(_bet_key(b))
 
+        # Persist to tracker DB (additive — _posted_bets stays unchanged)
+        if _db_conn:
+            def _save_to_db():
+                for b in new_big + new_other:
+                    ks = _kelly_dollars(b)
+                    kf = float(ks.replace("$", "")) if ks else None
+                    try:
+                        save_bet(_db_conn, b, kf)
+                    except Exception as db_err:
+                        log.warning("Tracker save failed: %s", db_err)
+            await asyncio.get_event_loop().run_in_executor(None, _save_to_db)
+
         # Build embeds once, reuse for all channels
         big_embeds = format_bet_embeds(new_big) if new_big else []
         other_embeds = format_bet_embeds(new_other) if new_other else []
@@ -982,12 +1026,24 @@ async def _auto_post_loop():
         await _send_results(channel, ping_role=True)
 
         if MIRROR_CHANNEL_ID:
+
             try:
                 mirror = bot.get_channel(int(MIRROR_CHANNEL_ID)) or await bot.fetch_channel(int(MIRROR_CHANNEL_ID))
                 log.info("Mirroring to channel %s", MIRROR_CHANNEL_ID)
                 await _send_results(mirror, ping_role=False)
             except Exception as mirror_err:
                 log.warning("Mirror channel %s not found or not accessible: %s", MIRROR_CHANNEL_ID, mirror_err)
+
+        # Auto-settlement pass — runs every loop tick regardless of new bets
+        if _db_conn and SETTLE_ON_TIMER:
+            settle_counts = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: run_settlement_pass(_db_conn)
+            )
+            if settle_counts["settled"] > 0:
+                log.info(
+                    "Auto-settled %d bets (manual needed: %d)",
+                    settle_counts["settled"], settle_counts["manual_flagged"],
+                )
     except Exception as e:
         log.exception("Scheduled scrape/post failed")
         try:
@@ -1000,6 +1056,144 @@ async def _auto_post_loop():
 async def _auto_post_loop_error(error):
     """Log errors from the auto-post loop without stopping it."""
     log.exception("Unhandled error in auto-post loop — loop will continue", exc_info=error)
+
+
+# ---------------------------------------------------------------------------
+# Bet tracking commands
+# ---------------------------------------------------------------------------
+
+
+@bot.command(name="record")
+async def record_command(ctx):
+    """Show betting record, ROI, and profit breakdown by sportsbook."""
+    if not _db_conn:
+        await ctx.send("Bet tracker not initialized.")
+        return
+    loop = asyncio.get_event_loop()
+    stats = await loop.run_in_executor(None, lambda: get_record_stats(_db_conn))
+    overall = stats["overall"]
+
+    embed = discord.Embed(title="\U0001f4ca Betting Record", color=0x00CC66)
+    embed.add_field(
+        name="Overall",
+        value=(
+            f"W/L/Push: **{overall['wins']}-{overall['losses']}-{overall['pushes']}**\n"
+            f"Profit: **${overall['profit']:+.2f}**\n"
+            f"ROI: **{overall['roi']:+.1f}%**\n"
+            f"Pending: {overall['pending']} | Needs manual: {overall['needs_manual']}"
+        ),
+        inline=False,
+    )
+    for book, bs in sorted(stats["by_sportsbook"].items(), key=lambda x: -abs(x[1]["profit"]))[:8]:
+        embed.add_field(
+            name=book,
+            value=f"{bs['wins']}-{bs['losses']}-{bs['pushes']} | ${bs['profit']:+.2f} | ROI: {bs['roi']:+.1f}%",
+            inline=True,
+        )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="pending")
+async def pending_command(ctx):
+    """List up to 10 oldest unsettled bets."""
+    if not _db_conn:
+        await ctx.send("Bet tracker not initialized.")
+        return
+    loop = asyncio.get_event_loop()
+    bets = await loop.run_in_executor(None, lambda: get_pending_bets(_db_conn, limit=10))
+    if not bets:
+        await ctx.send("No pending bets.")
+        return
+    embed = discord.Embed(
+        title=f"⏳ Pending Bets ({len(bets)} shown)",
+        color=0xFFAA00,
+    )
+    for b in bets:
+        posted_dt = datetime.fromtimestamp(
+            b["posted_at"], tz=ZoneInfo("America/New_York")
+        ).strftime("%m/%d %I:%M%p ET")
+        kelly_str = f"${b['kelly_dollars']:.2f}" if b["kelly_dollars"] else "?"
+        manual_tag = " ⚠️ manual" if b["needs_manual"] else ""
+        embed.add_field(
+            name=f"#{b['id']} — {b['sportsbook']}",
+            value=(
+                f"{b['event']}\n"
+                f"**{b['bet_name']}** ({b['market']})\n"
+                f"Odds: {b['odds']} | Stake: {kelly_str} | Posted: {posted_dt}{manual_tag}"
+            ),
+            inline=False,
+        )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="settle")
+async def settle_command(ctx, bet_id: str = "", result: str = ""):
+    """Manually settle a bet. Usage: !settle <id> win|loss|push|void"""
+    if not _db_conn:
+        await ctx.send("Bet tracker not initialized.")
+        return
+    if not bet_id or not result:
+        await ctx.send("Usage: `!settle <id> win|loss|push|void`\nUse `!pending` to see bet IDs.")
+        return
+    result = result.lower().strip()
+    if result not in ("win", "loss", "push", "void"):
+        await ctx.send("Result must be one of: `win`, `loss`, `push`, `void`")
+        return
+    try:
+        bid = int(bet_id)
+    except ValueError:
+        await ctx.send("Bet ID must be a number. Use `!pending` to see IDs.")
+        return
+
+    loop = asyncio.get_event_loop()
+
+    def _do_settle():
+        row = _db_conn.execute(
+            "SELECT * FROM posted_bets WHERE id=?", (bid,)
+        ).fetchone()
+        if not row:
+            return None, f"Bet #{bid} not found."
+        if row["result"] != "pending":
+            return None, f"Bet #{bid} is already settled as `{row['result']}`."
+        profit = calc_profit_for_result(result, row["kelly_dollars"] or 0.0, row["odds"] or "0")
+        settle_bet(_db_conn, bid, result, "manual", profit)
+        return dict(row), None
+
+    row, err = await loop.run_in_executor(None, _do_settle)
+    if err:
+        await ctx.send(err)
+        return
+
+    profit = calc_profit_for_result(result, row["kelly_dollars"] or 0.0, row["odds"] or "0")
+    color = 0x00CC66 if result == "win" else (0xFF4444 if result == "loss" else 0x888888)
+    embed = discord.Embed(
+        title=f"Settled #{bid} — {result.upper()}",
+        description=(
+            f"**{row['bet_name']}** ({row['market']})\n"
+            f"{row['event']} | {row['sportsbook']}\n"
+            f"P/L: **${profit:+.2f}**"
+        ),
+        color=color,
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="settlecheck")
+async def settlecheck_command(ctx):
+    """Trigger an immediate ESPN auto-settlement pass on all pending bets."""
+    if not _db_conn:
+        await ctx.send("Bet tracker not initialized.")
+        return
+    status_msg = await ctx.send("\U0001f50d Running settlement check against ESPN…")
+    loop = asyncio.get_event_loop()
+    counts = await loop.run_in_executor(None, lambda: run_settlement_pass(_db_conn))
+    await status_msg.edit(content=(
+        f"Settlement pass complete — "
+        f"Settled: **{counts['settled']}** | "
+        f"Still pending: **{counts['pending']}** | "
+        f"Needs manual: **{counts['manual_flagged']}** | "
+        f"Errors: **{counts['errors']}**"
+    ))
 
 
 # ---------------------------------------------------------------------------

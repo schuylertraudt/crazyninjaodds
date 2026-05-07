@@ -39,8 +39,9 @@ holds all deployment-specific configuration as `Environment=` lines.
 ├── scrape_ev.py       # Core scraper — Playwright-based, CLI + importable API
 ├── scrape_oa.py       # OddsAssist Pro scraper (secondary source, merged with CNO)
 ├── discord_bot.py     # Discord bot — wraps scrapers, all user-facing behavior
+├── bet_tracker.py     # Bet result tracking — SQLite storage, ESPN auto-settlement, reporting
 ├── requirements.txt   # Python deps: playwright, rich, tabulate, discord.py
-├── .gitignore         # Ignores CSV output, debug files, .env, venv
+├── .gitignore         # Ignores CSV output, debug files, .env, venv, bet_tracker.db
 └── README.md          # User-facing setup and usage docs
 ```
 
@@ -95,6 +96,10 @@ Uses `discord.py` `commands.Bot` (prefix: `!`). All long-running work uses
 | `!parlay [N] [--legs N] [--sport X] [--book X] [--same-game] [--count N]` | Build N-leg parlays from current bets. |
 | `!ask <question>` | Chat with Gemini AI assistant (sports betting context). |
 | `!clearchat` | Clear AI conversation history for the channel. |
+| `!record` | Show overall W/L record, ROI, and profit breakdown by sportsbook. |
+| `!pending` | List up to 10 oldest unsettled tracked bets with their IDs. |
+| `!settle <id> win\|loss\|push\|void` | Manually settle a tracked bet by ID. |
+| `!settlecheck` | Trigger an immediate ESPN auto-settlement pass on all pending bets. |
 
 ---
 
@@ -237,6 +242,10 @@ All deployment-specific config lives in `/etc/systemd/system/cno-bot.service`.
 | `CNO_KELLY_FRACTION` | `0.25` | `0.25` | Fractional Kelly multiplier for regular books |
 | `CNO_BIG_KELLY_BANKROLL` | `1000` | `1000` | Assumed bankroll for big book Kelly calc |
 | `CNO_BIG_KELLY_FRACTION` | `0.25` | `0.25` | Fractional Kelly multiplier for big books |
+| **Bet tracker** | | | |
+| `CNO_TRACKER_DB` | `./bet_tracker.db` | (default) | Path to SQLite file for bet result tracking |
+| `CNO_ESPN_TIMEOUT_S` | `10` | (default) | Seconds before ESPN API requests time out |
+| `CNO_SETTLE_ON_TIMER` | `1` | (default) | Set to `0` to disable auto-settlement on the loop timer |
 
 When adding new tunable behavior, add it here as an env var with a sensible code
 default, and record the current service value in this table.
