@@ -393,33 +393,104 @@ def _settle_spread(bet_name: str, home_score: int, away_score: int,
     return "win" if adjusted > 0 else "loss"
 
 
-# ESPN stat key mapping from CNO market name
-_PLAYER_STAT_MAP = {
-    "player points":              "points",
-    "player rebounds":            "totalRebounds",
-    "player assists":             "assists",
-    "player 3-pointers made":     "threePointFieldGoalsMade",
-    "player threes":              "threePointFieldGoalsMade",
-    "player steals":              "steals",
-    "player blocks":              "blocks",
-    "player turnovers":           "turnovers",
-    "player hits":                "hits",      # MLB
-    "player strikeouts":          "strikeouts",
-    "player home runs":           "homeRuns",
-    "player goals":               "goals",     # NHL/soccer
-    "player shots on goal":       "shotsOnGoal",
+# ESPN stat key mapping from CNO market name → list of ESPN stat keys to sum.
+# Single-stat props use a one-element list; composites use multiple keys.
+_PLAYER_STAT_MAP: dict[str, list[str]] = {
+    # --- Single stats ---
+    "player points":                    ["points"],
+    "player rebounds":                  ["totalRebounds"],
+    "player assists":                   ["assists"],
+    "player 3-pointers made":           ["threePointFieldGoalsMade"],
+    "player threes":                    ["threePointFieldGoalsMade"],
+    "player steals":                    ["steals"],
+    "player blocks":                    ["blocks"],
+    "player turnovers":                 ["turnovers"],
+    "player hits":                      ["hits"],           # MLB
+    "player strikeouts":                ["strikeouts"],
+    "player home runs":                 ["homeRuns"],
+    "player goals":                     ["goals"],          # NHL/soccer
+    "player shots on goal":             ["shotsOnGoal"],
+    # --- Composite props (basketball) ---
+    "player pra":                       ["points", "totalRebounds", "assists"],
+    "player pts reb ast":               ["points", "totalRebounds", "assists"],
+    "player pts+reb+ast":               ["points", "totalRebounds", "assists"],
+    "player points rebounds assists":   ["points", "totalRebounds", "assists"],
+    "player points+rebounds+assists":   ["points", "totalRebounds", "assists"],
+    "player pts+reb":                   ["points", "totalRebounds"],
+    "player points+rebounds":           ["points", "totalRebounds"],
+    "player pts reb":                   ["points", "totalRebounds"],
+    "player pr":                        ["points", "totalRebounds"],
+    "player pts+ast":                   ["points", "assists"],
+    "player points+assists":            ["points", "assists"],
+    "player pts ast":                   ["points", "assists"],
+    "player pa":                        ["points", "assists"],
+    "player reb+ast":                   ["totalRebounds", "assists"],
+    "player rebounds+assists":          ["totalRebounds", "assists"],
+    "player reb ast":                   ["totalRebounds", "assists"],
+    "player ra":                        ["totalRebounds", "assists"],
+    "player stls+blks":                 ["steals", "blocks"],
+    "player steals+blocks":             ["steals", "blocks"],
+    "player blks+stls":                 ["blocks", "steals"],
+    "player blocks+steals":             ["blocks", "steals"],
+    "player stocks":                    ["steals", "blocks"],
+    "player sb":                        ["steals", "blocks"],
+    "player pts+reb+ast+stl+blk":       ["points", "totalRebounds", "assists", "steals", "blocks"],
+    "player fantasy score":             ["points", "totalRebounds", "assists", "steals", "blocks"],
 }
+
+# Shorthand abbreviation → ESPN stat keys (used for dynamic composite parsing)
+_ABBREV_STAT_MAP: dict[str, str] = {
+    "pts": "points",
+    "pt":  "points",
+    "reb": "totalRebounds",
+    "rb":  "totalRebounds",
+    "ast": "assists",
+    "as":  "assists",
+    "stl": "steals",
+    "st":  "steals",
+    "blk": "blocks",
+    "bl":  "blocks",
+    "tov": "turnovers",
+    "to":  "turnovers",
+    "3pm": "threePointFieldGoalsMade",
+    "3pt": "threePointFieldGoalsMade",
+}
+
+
+def _resolve_composite_market(market: str) -> list[str] | None:
+    """
+    Fallback parser for composite market names not in _PLAYER_STAT_MAP.
+    Tries to split on '+' and map each token to a known ESPN stat key.
+    Returns list of stat keys, or None if any token is unrecognized.
+    """
+    # Strip leading "player" prefix and normalize
+    cleaned = re.sub(r"^player\s+", "", market.strip(), flags=re.IGNORECASE).lower()
+    parts = [p.strip() for p in cleaned.split("+") if p.strip()]
+    if len(parts) < 2:
+        return None
+    keys = []
+    for part in parts:
+        norm_part = re.sub(r"[^a-z0-9]", "", part)
+        key = _ABBREV_STAT_MAP.get(norm_part)
+        if key is None:
+            return None  # unrecognized token — give up
+        keys.append(key)
+    return keys
 
 
 def _settle_player_prop(bet_name: str, market: str, player_stats: dict) -> str | None:
     """
-    Settle a player prop.
+    Settle a player prop (single or composite).
     player_stats: {normalized_name: {stat_key: value, ...}}
     """
     market_key = _normalize(market)
-    stat_key = _PLAYER_STAT_MAP.get(market_key)
-    if stat_key is None:
-        return None  # composite or unknown market
+    stat_keys = _PLAYER_STAT_MAP.get(market_key)
+
+    # Try dynamic composite resolution for unmapped markets
+    if stat_keys is None:
+        stat_keys = _resolve_composite_market(market)
+    if not stat_keys:
+        return None
 
     direction, line = _parse_over_under(bet_name)
     if direction is None or line is None:
@@ -431,29 +502,35 @@ def _settle_player_prop(bet_name: str, market: str, player_stats: dict) -> str |
         return None
     player_name = _normalize(name_match.group(1))
 
-    # Find player in stats (substring match on last name as fallback)
-    stat_val = None
+    # Find matching player entry in stats
+    player_entry = None
     for norm_name, stats in player_stats.items():
         if player_name in norm_name or norm_name in player_name:
-            stat_val = stats.get(stat_key)
+            player_entry = stats
             break
-        # Last-name fallback
+        # Last-name fallback (only for names longer than 3 chars to avoid false matches)
         last = player_name.split()[-1] if player_name.split() else ""
         if last and len(last) > 3 and last in norm_name:
-            stat_val = stats.get(stat_key)
+            player_entry = stats
             break
 
-    if stat_val is None:
+    if player_entry is None:
         return None
 
-    try:
-        actual = float(stat_val)
-    except (TypeError, ValueError):
-        return None
+    # Sum all required stat keys
+    total = 0.0
+    for key in stat_keys:
+        val = player_entry.get(key)
+        if val is None:
+            return None  # missing component — can't compute
+        try:
+            total += float(val)
+        except (TypeError, ValueError):
+            return None
 
-    if actual == line:
+    if total == line:
         return "push"
-    return "win" if (direction == "over" and actual > line) or (direction == "under" and actual < line) else "loss"
+    return "win" if (direction == "over" and total > line) or (direction == "under" and total < line) else "loss"
 
 
 def _extract_player_stats_from_summary(summary: dict) -> dict:
