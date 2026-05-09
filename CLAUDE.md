@@ -100,6 +100,7 @@ Uses `discord.py` `commands.Bot` (prefix: `!`). All long-running work uses
 | `!pending` | List up to 10 oldest unsettled tracked bets with their IDs. |
 | `!settle <id> win\|loss\|push\|void` | Manually settle a tracked bet by ID. |
 | `!settlecheck` | Trigger an immediate ESPN auto-settlement pass on all pending bets. |
+| `!manualreview` | Show breakdown of needs-manual bets by market type and sport — use to identify gaps in auto-settlement coverage. |
 
 ---
 

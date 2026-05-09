@@ -197,6 +197,16 @@ def calc_profit_for_result(result: str, kelly_dollars: float, odds_str: str) -> 
     return 0.0
 
 
+def get_manual_breakdown(conn) -> dict:
+    """Return a breakdown of needs_manual bets by market and sport_league."""
+    rows = conn.execute(
+        "SELECT market, sport_league, COUNT(*) as cnt "
+        "FROM posted_bets WHERE needs_manual=1 AND result='pending' "
+        "GROUP BY market, sport_league ORDER BY cnt DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_record_stats(conn) -> dict:
     """Return overall W/L/profit stats and per-sportsbook breakdown."""
     rows = conn.execute(
@@ -482,6 +492,34 @@ def _resolve_composite_market(market: str) -> list[str] | None:
     return keys
 
 
+def _settle_team_total(bet_name: str, market: str, home_score: int, away_score: int,
+                       home_team: str, away_team: str) -> str | None:
+    """Settle a team total (home or away team points over/under)."""
+    direction, line = _parse_over_under(bet_name)
+    if direction is None or line is None:
+        return None
+    market_lower = market.lower()
+    # Determine which team's score to use
+    if "home" in market_lower:
+        score = home_score
+    elif "away" in market_lower or "visitor" in market_lower:
+        score = away_score
+    else:
+        # Try to infer from bet_name — check which team name it contains
+        norm_bet = _normalize(bet_name)
+        norm_home = _normalize(home_team)
+        norm_away = _normalize(away_team)
+        if norm_home and (norm_home in norm_bet or any(w in norm_bet for w in norm_home.split())):
+            score = home_score
+        elif norm_away and (norm_away in norm_bet or any(w in norm_bet for w in norm_away.split())):
+            score = away_score
+        else:
+            return None
+    if score == line:
+        return "push"
+    return "win" if (direction == "over" and score > line) or (direction == "under" and score < line) else "loss"
+
+
 def _settle_player_prop(bet_name: str, market: str, player_stats: dict) -> str | None:
     """
     Settle a player prop (single or composite).
@@ -685,14 +723,23 @@ def settle_single_bet(conn, bet_row: dict) -> str:
     market_lower = (bet_row.get("market") or "").lower()
     bet_name = bet_row.get("bet_name", "")
 
-    if any(k in market_lower for k in ("total", "over/under", "over under")):
+    # Team total — must check before generic "total" so it doesn't fall through
+    if "team total" in market_lower or "home total" in market_lower or "away total" in market_lower:
+        result = _settle_team_total(bet_name, bet_row.get("market", ""),
+                                    game["home_score"], game["away_score"],
+                                    game["home_team"], game["away_team"])
+    # Game total / alternate total (alt total, alternate total, etc.)
+    elif any(k in market_lower for k in ("total", "over/under", "over under")):
         result = _settle_total(bet_name, game["home_score"], game["away_score"])
-    elif any(k in market_lower for k in ("moneyline", "money line")):
+    # Moneyline (including alternate / 3-way)
+    elif any(k in market_lower for k in ("moneyline", "money line", "to win", "match winner", "result")):
         result = _settle_moneyline(bet_name, game["home_team"], game["away_team"], game["winner"])
-    elif any(k in market_lower for k in ("spread", "run line", "puck line", "handicap")):
+    # Spread / alternate spread / run line / puck line
+    elif any(k in market_lower for k in ("spread", "run line", "puck line", "handicap", "asian handicap")):
         result = _settle_spread(bet_name, game["home_score"], game["away_score"],
                                 game["home_team"], game["away_team"])
-    elif market_lower.startswith("player"):
+    # Player props (all variants — "Player ...", "Batter ...", "Pitcher ...")
+    elif any(market_lower.startswith(p) for p in ("player", "batter", "pitcher", "goalie")):
         player_stats = _extract_player_stats_from_summary(summary)
         result = _settle_player_prop(bet_name, bet_row.get("market", ""), player_stats)
     else:

@@ -54,6 +54,7 @@ from bet_tracker import (
     settle_bet,
     run_settlement_pass,
     get_record_stats,
+    get_manual_breakdown,
     calc_profit_for_result,
 )
 import bet_tracker as _bt
@@ -1194,6 +1195,31 @@ async def settlecheck_command(ctx):
         f"Needs manual: **{counts['manual_flagged']}** | "
         f"Errors: **{counts['errors']}**"
     ))
+
+
+@bot.command(name="manualreview")
+async def manualreview_command(ctx):
+    """Show a breakdown of needs-manual bets by market type and sport."""
+    if not _db_conn:
+        await ctx.send("Bet tracker not initialized.")
+        return
+    loop = asyncio.get_event_loop()
+    rows = await loop.run_in_executor(None, lambda: get_manual_breakdown(_db_conn))
+    if not rows:
+        await ctx.send("No bets flagged as needs-manual.")
+        return
+    embed = discord.Embed(
+        title=f"⚠️ Needs-Manual Breakdown ({sum(r['cnt'] for r in rows)} total)",
+        description="Markets the auto-settler can't handle yet. Use `!settle <id> win|loss|push|void` for individual bets.",
+        color=0xFF8800,
+    )
+    lines = []
+    for r in rows[:20]:
+        sport = r["sport_league"] or "?"
+        market = r["market"] or "?"
+        lines.append(f"`{r['cnt']:>3}×` **{market}** ({sport})")
+    embed.add_field(name="Market / Sport", value="\n".join(lines), inline=False)
+    await ctx.send(embed=embed)
 
 
 # ---------------------------------------------------------------------------
