@@ -271,9 +271,13 @@ def _espn_get(url: str) -> dict | None:
         return None
 
 
-def _fetch_scoreboard(sport: str, league: str) -> list[dict]:
-    """Return list of ESPN competition dicts from the scoreboard endpoint."""
-    data = _espn_get(f"{ESPN_BASE}/{sport}/{league}/scoreboard")
+def _fetch_scoreboard(sport: str, league: str, date_str: str = None) -> list[dict]:
+    """Return list of ESPN competition dicts from the scoreboard endpoint.
+    Pass date_str as YYYYMMDD to retrieve historical games; omit for today."""
+    url = f"{ESPN_BASE}/{sport}/{league}/scoreboard"
+    if date_str:
+        url += f"?dates={date_str}"
+    data = _espn_get(url)
     if not data:
         return []
     events = []
@@ -600,6 +604,22 @@ def _get_game_result(summary: dict) -> dict | None:
         return None
 
 
+def _game_date_strs(bet_row: dict) -> list[str]:
+    """Return YYYYMMDD date strings to query ESPN scoreboard for this bet.
+    Tries the game date (from game_time_epoch or posted_at) plus the next
+    calendar day to handle late-night games that end after midnight ET."""
+    et = ZoneInfo("America/New_York")
+    epoch = bet_row.get("game_time_epoch") or bet_row.get("posted_at")
+    if not epoch:
+        return []
+    dt = datetime.fromtimestamp(epoch, tz=et)
+    dates = [dt.strftime("%Y%m%d")]
+    next_day = (dt + timedelta(days=1)).strftime("%Y%m%d")
+    if next_day not in dates:
+        dates.append(next_day)
+    return dates
+
+
 def settle_single_bet(conn, bet_row: dict) -> str:
     """
     Attempt ESPN auto-settlement for one pending bet.
@@ -620,8 +640,20 @@ def settle_single_bet(conn, bet_row: dict) -> str:
     # Use cached ESPN event ID or look it up
     event_id = bet_row.get("espn_event_id")
     if not event_id:
-        events = _fetch_scoreboard(sport, league)
-        event_id = _match_event_to_espn(bet_row.get("event", ""), events)
+        # Try game date, next day, then today — scoreboard only returns the
+        # requested date's games, so historical bets need the explicit date param
+        et = ZoneInfo("America/New_York")
+        today_str = datetime.now(et).strftime("%Y%m%d")
+        date_candidates = _game_date_strs(bet_row)
+        if today_str not in date_candidates:
+            date_candidates.append(today_str)
+
+        for date_str in date_candidates:
+            events = _fetch_scoreboard(sport, league, date_str)
+            event_id = _match_event_to_espn(bet_row.get("event", ""), events)
+            if event_id:
+                break
+
         if event_id:
             try:
                 conn.execute(
