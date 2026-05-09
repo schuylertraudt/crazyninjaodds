@@ -55,6 +55,7 @@ from bet_tracker import (
     run_settlement_pass,
     get_record_stats,
     get_manual_breakdown,
+    reset_manual_flags,
     calc_profit_for_result,
 )
 import bet_tracker as _bt
@@ -1187,7 +1188,12 @@ async def settlecheck_command(ctx):
         return
     status_msg = await ctx.send("\U0001f50d Running settlement check against ESPN…")
     loop = asyncio.get_event_loop()
-    counts = await loop.run_in_executor(None, lambda: run_settlement_pass(_db_conn))
+
+    def _run():
+        reset_manual_flags(_db_conn)
+        return run_settlement_pass(_db_conn)
+
+    counts = await loop.run_in_executor(None, _run)
     await status_msg.edit(content=(
         f"Settlement pass complete — "
         f"Settled: **{counts['settled']}** | "

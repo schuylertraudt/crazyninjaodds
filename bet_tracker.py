@@ -207,6 +207,16 @@ def get_manual_breakdown(conn) -> dict:
     return [dict(r) for r in rows]
 
 
+def reset_manual_flags(conn) -> int:
+    """Clear needs_manual on all pending bets so they get retried by settlement pass.
+    Returns number of rows reset."""
+    cur = conn.execute(
+        "UPDATE posted_bets SET needs_manual=0 WHERE needs_manual=1 AND result='pending'"
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def get_record_stats(conn) -> dict:
     """Return overall W/L/profit stats and per-sportsbook breakdown."""
     rows = conn.execute(
@@ -308,7 +318,8 @@ def _normalize(s: str) -> str:
     """Lowercase, strip diacritics, remove punctuation for fuzzy matching."""
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+    s = re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+    return re.sub(r"\s+", " ", s)
 
 
 def _match_event_to_espn(cno_event: str, espn_comps: list[dict]) -> str | None:
@@ -408,66 +419,95 @@ def _settle_spread(bet_name: str, home_score: int, away_score: int,
 
 
 # ESPN stat key mapping from CNO market name → list of ESPN stat keys to sum.
+# ESPN box score uses abbreviated keys (pts, reb, ast, stl, blk, to, 3pt, etc.)
 # Single-stat props use a one-element list; composites use multiple keys.
+# Space-separated variants (e.g. "player rebounds assists") handle market names
+# like "Player Rebounds + Assists" after _normalize() strips "+" and collapses spaces.
 _PLAYER_STAT_MAP: dict[str, list[str]] = {
-    # --- Single stats ---
-    "player points":                    ["points"],
-    "player rebounds":                  ["totalRebounds"],
-    "player assists":                   ["assists"],
-    "player 3-pointers made":           ["threePointFieldGoalsMade"],
-    "player threes":                    ["threePointFieldGoalsMade"],
-    "player steals":                    ["steals"],
-    "player blocks":                    ["blocks"],
-    "player turnovers":                 ["turnovers"],
-    "player hits":                      ["hits"],           # MLB
-    "player strikeouts":                ["strikeouts"],
-    "player home runs":                 ["homeRuns"],
-    "player goals":                     ["goals"],          # NHL/soccer
-    "player shots on goal":             ["shotsOnGoal"],
-    # --- Composite props (basketball) ---
-    "player pra":                       ["points", "totalRebounds", "assists"],
-    "player pts reb ast":               ["points", "totalRebounds", "assists"],
-    "player pts+reb+ast":               ["points", "totalRebounds", "assists"],
-    "player points rebounds assists":   ["points", "totalRebounds", "assists"],
-    "player points+rebounds+assists":   ["points", "totalRebounds", "assists"],
-    "player pts+reb":                   ["points", "totalRebounds"],
-    "player points+rebounds":           ["points", "totalRebounds"],
-    "player pts reb":                   ["points", "totalRebounds"],
-    "player pr":                        ["points", "totalRebounds"],
-    "player pts+ast":                   ["points", "assists"],
-    "player points+assists":            ["points", "assists"],
-    "player pts ast":                   ["points", "assists"],
-    "player pa":                        ["points", "assists"],
-    "player reb+ast":                   ["totalRebounds", "assists"],
-    "player rebounds+assists":          ["totalRebounds", "assists"],
-    "player reb ast":                   ["totalRebounds", "assists"],
-    "player ra":                        ["totalRebounds", "assists"],
-    "player stls+blks":                 ["steals", "blocks"],
-    "player steals+blocks":             ["steals", "blocks"],
-    "player blks+stls":                 ["blocks", "steals"],
-    "player blocks+steals":             ["blocks", "steals"],
-    "player stocks":                    ["steals", "blocks"],
-    "player sb":                        ["steals", "blocks"],
-    "player pts+reb+ast+stl+blk":       ["points", "totalRebounds", "assists", "steals", "blocks"],
-    "player fantasy score":             ["points", "totalRebounds", "assists", "steals", "blocks"],
+    # --- Basketball single stats (NBA/NCAAB/WNBA) ---
+    "player points":                        ["pts"],
+    "player rebounds":                      ["reb"],
+    "player assists":                       ["ast"],
+    "player 3-pointers made":               ["3pt"],
+    "player threes":                        ["3pt"],
+    "player steals":                        ["stl"],
+    "player blocks":                        ["blk"],
+    "player turnovers":                     ["to"],
+    # --- Basketball composites ---
+    "player pra":                           ["pts", "reb", "ast"],
+    "player pts reb ast":                   ["pts", "reb", "ast"],
+    "player pts+reb+ast":                   ["pts", "reb", "ast"],
+    "player points rebounds assists":       ["pts", "reb", "ast"],
+    "player points+rebounds+assists":       ["pts", "reb", "ast"],
+    "player pts+reb":                       ["pts", "reb"],
+    "player points+rebounds":              ["pts", "reb"],
+    "player pts reb":                       ["pts", "reb"],
+    "player points rebounds":               ["pts", "reb"],
+    "player pr":                            ["pts", "reb"],
+    "player pts+ast":                       ["pts", "ast"],
+    "player points+assists":               ["pts", "ast"],
+    "player pts ast":                       ["pts", "ast"],
+    "player points assists":                ["pts", "ast"],
+    "player pa":                            ["pts", "ast"],
+    "player reb+ast":                       ["reb", "ast"],
+    "player rebounds+assists":             ["reb", "ast"],
+    "player reb ast":                       ["reb", "ast"],
+    "player rebounds assists":              ["reb", "ast"],
+    "player ra":                            ["reb", "ast"],
+    "player stls+blks":                     ["stl", "blk"],
+    "player steals+blocks":                ["stl", "blk"],
+    "player blks+stls":                     ["blk", "stl"],
+    "player blocks+steals":                ["blk", "stl"],
+    "player blocks steals":                 ["blk", "stl"],
+    "player steals blocks":                 ["stl", "blk"],
+    "player stocks":                        ["stl", "blk"],
+    "player sb":                            ["stl", "blk"],
+    "player pts+reb+ast+stl+blk":          ["pts", "reb", "ast", "stl", "blk"],
+    "player fantasy score":                ["pts", "reb", "ast", "stl", "blk"],
+    # --- Baseball (MLB) ---
+    "player hits":                          ["h"],
+    "player home runs":                     ["hr"],
+    "player strikeouts":                    ["so"],
+    "player pitching strikeouts":           ["so"],
+    "player batting strikeouts":            ["so"],
+    "player runs":                          ["r"],
+    "player rbi":                           ["rbi"],
+    "player rbis":                          ["rbi"],
+    "player walks":                         ["bb"],
+    "player batting walks":                 ["bb"],
+    "player walks allowed":                 ["bb"],
+    "player hits+runs+rbis":               ["h", "r", "rbi"],
+    "player hits runs rbis":                ["h", "r", "rbi"],
+    # --- Hockey (NHL) ---
+    "player goals":                         ["g"],
+    "player shots on goal":                ["s"],
 }
 
-# Shorthand abbreviation → ESPN stat keys (used for dynamic composite parsing)
+# Shorthand abbreviation → ESPN stat key (used for dynamic composite parsing)
 _ABBREV_STAT_MAP: dict[str, str] = {
-    "pts": "points",
-    "pt":  "points",
-    "reb": "totalRebounds",
-    "rb":  "totalRebounds",
-    "ast": "assists",
-    "as":  "assists",
-    "stl": "steals",
-    "st":  "steals",
-    "blk": "blocks",
-    "bl":  "blocks",
-    "tov": "turnovers",
-    "to":  "turnovers",
-    "3pm": "threePointFieldGoalsMade",
-    "3pt": "threePointFieldGoalsMade",
+    "pts": "pts",
+    "pt":  "pts",
+    "reb": "reb",
+    "rb":  "reb",
+    "ast": "ast",
+    "as":  "ast",
+    "stl": "stl",
+    "st":  "stl",
+    "blk": "blk",
+    "bl":  "blk",
+    "tov": "to",
+    "to":  "to",
+    "3pm": "3pt",
+    "3pt": "3pt",
+    "hr":  "hr",
+    "rbi": "rbi",
+    "h":   "h",
+    "r":   "r",
+    "bb":  "bb",
+    "so":  "so",
+    "k":   "so",
+    "g":   "g",
+    "s":   "s",
 }
 
 
@@ -593,10 +633,17 @@ def _extract_player_stats_from_summary(summary: dict) -> dict:
                     players[name] = {}
                 for i, key in enumerate(keys):
                     if i < len(stats):
-                        try:
-                            players[name][key] = float(stats[i])
-                        except (ValueError, TypeError):
-                            players[name][key] = stats[i]
+                        val = stats[i]
+                        # ESPN shooting stats come as "made-attempted" (e.g. "3-8")
+                        # Extract just the made component as a float
+                        if isinstance(val, str) and re.match(r'^\d+-\d+$', val):
+                            val = float(val.split('-')[0])
+                        else:
+                            try:
+                                val = float(val)
+                            except (ValueError, TypeError):
+                                pass
+                        players[name][key] = val
     return players
 
 
