@@ -597,6 +597,12 @@ def _settle_player_prop(bet_name: str, market: str, player_stats: dict) -> str |
             break
 
     if player_entry is None:
+        log.info(
+            "PropSettle MISS: market=%r stat_keys=%s player=%r not in box score "
+            "(available: %s)",
+            market_key, stat_keys, player_name,
+            list(player_stats.keys())[:8],
+        )
         return None
 
     # Sum all required stat keys
@@ -604,10 +610,19 @@ def _settle_player_prop(bet_name: str, market: str, player_stats: dict) -> str |
     for key in stat_keys:
         val = player_entry.get(key)
         if val is None:
+            log.info(
+                "PropSettle MISS: market=%r player=%r key=%r not in entry "
+                "(available keys: %s)",
+                market_key, player_name, key, list(player_entry.keys()),
+            )
             return None  # missing component — can't compute
         try:
             total += float(val)
         except (TypeError, ValueError):
+            log.info(
+                "PropSettle MISS: market=%r player=%r key=%r val=%r not numeric",
+                market_key, player_name, key, val,
+            )
             return None
 
     if total == line:
@@ -644,6 +659,10 @@ def _extract_player_stats_from_summary(summary: dict) -> dict:
                             except (ValueError, TypeError):
                                 pass
                         players[name][key] = val
+    # Log the ESPN stat keys actually present so we can verify key names
+    if players:
+        sample_name = next(iter(players))
+        log.info("ESPN boxscore keys (sample player %r): %s", sample_name, list(players[sample_name].keys()))
     return players
 
 
